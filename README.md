@@ -14,7 +14,6 @@
 - Generate GitHub Application JWT [Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app>)
 - Obtain GitHub App installation tokens [Authenticating as a GitHub App](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-token-generated-by-an-app)
 
-
 This package is designed to be used with the `golang.org/x/oauth2` package, which provides support for OAuth2 authentication.
 
 ## Installation
@@ -45,7 +44,7 @@ import (
 
 func main() {
  privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
- appID := os.Getenv("GITHUB_APP_ID")
+ appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
  installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
 
  appTokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey)
@@ -93,7 +92,7 @@ import (
 
 func main() {
  privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
- appID := os.Getenv("GITHUB_APP_ID")
+ appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
 
  tokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey, githubauth.WithApplicationTokenExpiration(5*time.Minute))
  if err != nil {
@@ -128,7 +127,7 @@ import (
 
 func main() {
  privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
- appID := os.Getenv("GITHUB_APP_ID")
+ appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
  installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
 
  appTokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey)
