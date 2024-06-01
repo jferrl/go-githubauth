@@ -12,7 +12,8 @@
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
 
 - Generate GitHub Application JWT [Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app>)
-- Obtain GitHub App installation tokens [Authenticating as a GitHub App]([Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app>))
+- Obtain GitHub App installation tokens [Authenticating as a GitHub App](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-token-generated-by-an-app)
+
 
 This package is designed to be used with the `golang.org/x/oauth2` package, which provides support for OAuth2 authentication.
 
@@ -26,7 +27,7 @@ go get -u github.com/jferrl/go-githubauth
 
 ## Usage
 
-### Usage with `https://github.com/google/go-github` and `golang.org/x/oauth2`
+### Usage with [go-github](https://github.com/google/go-github)  and [oauth2](golang.org/x/oauth2)
 
 ```go
 package main
