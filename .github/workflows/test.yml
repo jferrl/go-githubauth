@@ -1,0 +1,65 @@
+
+name: tests
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  GO111MODULE: on
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    permissions:
+      actions: write # for styfle/cancel-workflow-action to cancel/stop running workflows
+      contents: read # for actions/checkout to fetch code
+    strategy:
+      matrix:
+        go-version: [1.x, 1.22.x]
+        platform: [ubuntu-latest]
+        include:
+          # only update test coverage stats with the most recent go version on linux
+          - go-version: 1.x
+            platform: ubuntu-latest
+            update-coverage: true
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Cancel previous
+        uses: styfle/cancel-workflow-action@bb6001c4ea612bf59c3abfc4756fbceee4f870c7 #0.10.0
+        with:
+          access_token: ${{ github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - uses: actions/checkout@v4
+
+      # Get values for cache paths to be used in later steps
+      - id: cache-paths
+        run: |
+          echo "::set-output name=go-cache::$(go env GOCACHE)"
+          echo "::set-output name=go-mod-cache::$(go env GOMODCACHE)"
+      - name: Cache go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.cache-paths.outputs.go-cache }}
+            ${{ steps.cache-paths.outputs.go-mod-cache }}
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Run go test
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Upload coverage to Codecov
+        if: ${{ matrix.update-coverage }}
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
