@@ -94,7 +94,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 			mock.PostAppInstallationsAccessTokensByInstallationId,
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"message":"Internal Server Error"}`))
+				_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
 			}),
 		))
 
