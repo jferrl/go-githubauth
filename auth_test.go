@@ -22,7 +22,7 @@ func TestNewApplicationTokenSource(t *testing.T) {
 	}
 
 	type args struct {
-		appID      string
+		appID      int64
 		privateKey []byte
 		opts       []ApplicationTokenOpt
 	}
@@ -39,13 +39,13 @@ func TestNewApplicationTokenSource(t *testing.T) {
 		},
 		{
 			name:    "private key is not provided",
-			args:    args{appID: "app-id"},
+			args:    args{appID: 132},
 			wantErr: true,
 		},
 		{
 			name: "valid application token source",
 			args: args{
-				appID:      "app-id",
+				appID:      132,
 				privateKey: privateKey,
 				opts: []ApplicationTokenOpt{
 					WithApplicationTokenExpiration(15 * time.Minute),
@@ -103,7 +103,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	appSrc, err := NewApplicationTokenSource("app-id", privateKey, WithApplicationTokenExpiration(5*time.Minute))
+	appSrc, err := NewApplicationTokenSource(34434, privateKey, WithApplicationTokenExpiration(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
@@ -22,10 +23,13 @@ const (
 	bearerTokenType = "Bearer"
 )
 
+// ResourceID represents a GitHub resource ID.
+type ResourceID any
+
 // applicationTokenSource represents a GitHub App token.
 // https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 type applicationTokenSource struct {
-	id         string
+	id         int64
 	privateKey *rsa.PrivateKey
 	expiration time.Duration
 }
@@ -49,9 +53,10 @@ func WithApplicationTokenExpiration(expiration time.Duration) ApplicationTokenOp
 
 // NewApplicationTokenSource creates a new GitHub App token source.
 // An application token is used to authenticate as a GitHub App.
-func NewApplicationTokenSource(id string, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
-	if id == "" {
-		return nil, errors.New("applicationID is required")
+// ID is defined as int64 just to be aligned with the go-github library.
+func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
+	if id == 0 {
+		return nil, errors.New("application id is required")
 	}
 
 	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
@@ -82,7 +87,7 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		Issuer:    t.id,
+		Issuer:    strconv.FormatInt(t.id, 10),
 	})
 
 	tokenString, err := token.SignedString(t.privateKey)
@@ -128,6 +133,7 @@ type installationTokenSource struct {
 }
 
 // NewInstallationTokenSource creates a new GitHub App installation token source.
+// ID is defined as int64 just to be aligned with the go-github library.
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	client := &http.Client{
 		Transport: &oauth2.Transport{
