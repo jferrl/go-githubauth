@@ -27,9 +27,6 @@ const (
 	bearerTokenType = "Bearer"
 )
 
-// ResourceID represents a GitHub resource ID.
-type ResourceID any
-
 // applicationTokenSource represents a GitHub App token.
 // https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 type applicationTokenSource struct {
