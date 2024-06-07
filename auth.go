@@ -27,8 +27,8 @@ const (
 	bearerTokenType = "Bearer"
 )
 
-// applicationTokenSource represents a GitHub App token.
-// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+// applicationTokenSource represents a GitHub App token source.
+// See: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 type applicationTokenSource struct {
 	id         int64
 	privateKey *rsa.PrivateKey
@@ -39,12 +39,10 @@ type applicationTokenSource struct {
 type ApplicationTokenOpt func(*applicationTokenSource)
 
 // WithApplicationTokenExpiration sets the expiration for the GitHub App token.
-// The expiration time of the JWT, after which it can't be used to request an installation token.
-// The time must be no more than 10 minutes into the future.
+// The expiration time of the JWT must be no more than 10 minutes into the future
+// and greater than 0. If the provided expiration is invalid, the default expiration is used.
 func WithApplicationTokenExpiration(expiration time.Duration) ApplicationTokenOpt {
 	return func(a *applicationTokenSource) {
-		// The expiration time must be no more than 10 minutes into the future.
-		// Also, the expiration time must be greater than 0.
 		if expiration > DefaultApplicationTokenExpiration || expiration <= 0 {
 			expiration = DefaultApplicationTokenExpiration
 		}
@@ -52,9 +50,9 @@ func WithApplicationTokenExpiration(expiration time.Duration) ApplicationTokenOp
 	}
 }
 
-// NewApplicationTokenSource creates a new GitHub App token source.
-// An application token is used to authenticate as a GitHub App.
-// ID is defined as int64 just to be aligned with the go-github library.
+// NewApplicationTokenSource creates a new GitHub App token source using the provided
+// application ID and private key. Functional options can be passed to customize the
+// token source.
 func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
 	if id == 0 {
 		return nil, errors.New("application id is required")
@@ -78,10 +76,9 @@ func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationT
 	return t, nil
 }
 
-// Token creates a new GitHub App token.
-// The token is used to authenticate as a GitHub App.
+// Token generates a new GitHub App token for authenticating as a GitHub App.
 func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
-	// To protect against clock drift, set this 60 seconds in the past.
+	// To protect against clock drift, set the issuance time 60 seconds in the past.
 	now := time.Now().Add(-60 * time.Second)
 	expiresAt := now.Add(t.expiration)
 
@@ -125,7 +122,7 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 	}
 }
 
-// InstallationTokenSource represents a GitHub App installation token source.
+// installationTokenSource represents a GitHub App installation token source.
 type installationTokenSource struct {
 	id   int64
 	src  oauth2.TokenSource
@@ -133,8 +130,9 @@ type installationTokenSource struct {
 	opts *github.InstallationTokenOptions
 }
 
-// NewInstallationTokenSource creates a new GitHub App installation token source.
-// ID is defined as int64 just to be aligned with the go-github library.
+// NewInstallationTokenSource creates a new GitHub App installation token source using the provided
+// installation ID and token source. Functional options can be passed to customize the
+// installation token source.
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	client := &http.Client{
 		Transport: &oauth2.Transport{
@@ -155,8 +153,7 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 	return i
 }
 
-// Token creates a new GitHub App installation token.
-// The token is used to authenticate as a GitHub App installation.
+// Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
 func (t *installationTokenSource) Token() (*oauth2.Token, error) {
 	ctx := context.Background()
 
