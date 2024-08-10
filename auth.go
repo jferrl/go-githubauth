@@ -118,16 +118,38 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 			Base:   client.Transport,
 		}
 
-		i.apps = github.NewClient(client).Apps
+		i.client = github.NewClient(client)
+	}
+}
+
+// WithEnterpriseURLs sets the base URL and upload URL for the GitHub App installation token source.
+// This should passed after WithHTTPClient to ensure the HTTP client is updated with the new URLs.
+// If the provided URLs are invalid, the default GitHub URLs are used.
+func WithEnterpriseURLs(baseURL, uploadURL string) InstallationTokenSourceOpt {
+	return func(i *installationTokenSource) {
+		enterpriseClient, err := i.client.WithEnterpriseURLs(baseURL, uploadURL)
+		if err != nil {
+			return
+		}
+
+		i.client = enterpriseClient
+	}
+}
+
+// WithContext sets the context for the GitHub App installation token source.
+func WithContext(ctx context.Context) InstallationTokenSourceOpt {
+	return func(i *installationTokenSource) {
+		i.ctx = ctx
 	}
 }
 
 // installationTokenSource represents a GitHub App installation token source.
 type installationTokenSource struct {
-	id   int64
-	src  oauth2.TokenSource
-	apps *github.AppsService
-	opts *github.InstallationTokenOptions
+	id     int64
+	ctx    context.Context
+	src    oauth2.TokenSource
+	client *github.Client
+	opts   *github.InstallationTokenOptions
 }
 
 // NewInstallationTokenSource creates a new GitHub App installation token source using the provided
@@ -141,9 +163,10 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 	}
 
 	i := &installationTokenSource{
-		id:   id,
-		src:  src,
-		apps: github.NewClient(client).Apps,
+		id:     id,
+		ctx:    context.Background(),
+		src:    src,
+		client: github.NewClient(client),
 	}
 
 	for _, opt := range opts {
@@ -155,9 +178,7 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
 func (t *installationTokenSource) Token() (*oauth2.Token, error) {
-	ctx := context.Background()
-
-	token, _, err := t.apps.CreateInstallationToken(ctx, t.id, t.opts)
+	token, _, err := t.client.Apps.CreateInstallationToken(t.ctx, t.id, t.opts)
 	if err != nil {
 		return nil, err
 	}

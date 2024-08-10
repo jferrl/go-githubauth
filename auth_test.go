@@ -1,6 +1,7 @@
 package githubauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -138,6 +139,8 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				src: appSrc,
 				opts: []InstallationTokenSourceOpt{
 					WithInstallationTokenOptions(&github.InstallationTokenOptions{}),
+					WithContext(context.Background()),
+					WithEnterpriseURLs("https://github.example.com", "https://github.example.com"),
 					WithHTTPClient(mockedHTTPClient),
 				},
 			},
