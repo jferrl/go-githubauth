@@ -1,14 +1,17 @@
 module github.com/jferrl/go-githubauth
 
-go 1.23
+go 1.23.0
+
+toolchain go1.24.1
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
-	github.com/google/go-github/v64 v64.0.0
-	golang.org/x/oauth2 v0.23.0
+	github.com/google/go-github/v69 v69.0.0
+	golang.org/x/oauth2 v0.28.0
 )
 
 require (
+	github.com/google/go-github/v64 v64.0.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	golang.org/x/time v0.6.0 // indirect
 )
