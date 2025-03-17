@@ -69,26 +69,21 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	now := time.Now().UTC()
 	expiration := now.Add(10 * time.Minute)
 
-	githubRead := "read"
-	mockedInstallationToken := "mocked-installation-token"
-	mockedRepo := "mocked-repo-1"
-	var mockedRepoId int64 = 1
-
 	mockedHTTPClient := mock.NewMockedHTTPClient(
 		mock.WithRequestMatch(
 			mock.PostAppInstallationsAccessTokensByInstallationId,
 			github.InstallationToken{
-				Token: &mockedInstallationToken,
+				Token: github.Ptr("mocked-installation-token"),
 				ExpiresAt: &github.Timestamp{
 					Time: expiration,
 				},
 				Permissions: &github.InstallationPermissions{
-					PullRequests: &githubRead,
+					PullRequests: github.Ptr("read"),
 				},
 				Repositories: []*github.Repository{
 					{
-						Name: &mockedRepo,
-						ID:   &mockedRepoId,
+						Name: github.Ptr("mocked-repo-1"),
+						ID:   github.Ptr(int64(1)),
 					},
 				},
 			},
