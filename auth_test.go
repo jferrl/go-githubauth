@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v64/github"
+	"github.com/google/go-github/v69/github"
 	"github.com/migueleliasweb/go-github-mock/src/mock"
 	"golang.org/x/oauth2"
 )
@@ -73,17 +73,17 @@ func Test_installationTokenSource_Token(t *testing.T) {
 		mock.WithRequestMatch(
 			mock.PostAppInstallationsAccessTokensByInstallationId,
 			github.InstallationToken{
-				Token: github.String("mocked-installation-token"),
+				Token: github.Ptr("mocked-installation-token"),
 				ExpiresAt: &github.Timestamp{
 					Time: expiration,
 				},
 				Permissions: &github.InstallationPermissions{
-					PullRequests: github.String("read"),
+					PullRequests: github.Ptr("read"),
 				},
 				Repositories: []*github.Repository{
 					{
-						Name: github.String("mocked-repo-1"),
-						ID:   github.Int64(1),
+						Name: github.Ptr("mocked-repo-1"),
+						ID:   github.Ptr(int64(1)),
 					},
 				},
 			},
