@@ -5,9 +5,9 @@ go 1.23.0
 toolchain go1.24.1
 
 require (
-	github.com/golang-jwt/jwt/v5 v5.2.1
-	github.com/google/go-github/v69 v69.0.0
-	golang.org/x/oauth2 v0.28.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/go-github/v69 v69.2.0
+	golang.org/x/oauth2 v0.30.0
 )
 
 require (
