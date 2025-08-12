@@ -7,14 +7,30 @@
 
 `go-githubauth` is a Go package that provides utilities for GitHub authentication, including generating and using GitHub App tokens and installation tokens.
 
+**v2.0.0** introduces Go generics support for unified authentication with both numeric App IDs and alphanumeric Client IDs in a single, type-safe API.
+
 ## Features
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
 
+### v2.0.0 Features
+
+- **🔥 Go Generics Support**: Single `NewApplicationTokenSource` function supports both `int64` App IDs and `string` Client IDs
+- **🛡️ Type Safety**: Compile-time verification of identifier types through generic constraints
+- **⚡ Type Inference**: Automatic type detection - no need to specify generic parameters explicitly
+- **📖 Enhanced Documentation**: Official GitHub API references and comprehensive JWT details
+
+### Core Capabilities
+
 - Generate GitHub Application JWT [Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 - Obtain GitHub App installation tokens [Authenticating as a GitHub App](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-token-generated-by-an-app)
+- RS256-signed JWTs with proper clock drift protection
+- Support for both legacy App IDs and modern Client IDs (recommended by GitHub)
 
-This package is designed to be used with the `golang.org/x/oauth2` package, which provides support for OAuth2 authentication.
+### Requirements
+
+- **Go 1.18+** (required for generics support)
+- This package is designed to be used with the `golang.org/x/oauth2` package
 
 ## Installation
 
@@ -26,7 +42,9 @@ go get -u github.com/jferrl/go-githubauth
 
 ## Usage
 
-### Usage with [go-github](https://github.com/google/go-github)  and [oauth2](golang.org/x/oauth2)
+### Usage with [go-github](https://github.com/google/go-github) and [oauth2](golang.org/x/oauth2)
+
+#### Client ID (Recommended)
 
 ```go
 package main
@@ -37,7 +55,51 @@ import (
  "os"
  "strconv"
 
- "github.com/google/go-github/v62/github"
+ "github.com/google/go-github/v73/github"
+ "github.com/jferrl/go-githubauth"
+ "golang.org/x/oauth2"
+)
+
+func main() {
+ privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
+ clientID := os.Getenv("GITHUB_APP_CLIENT_ID") // e.g., "Iv1.1234567890abcdef"
+ installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
+
+ // Go automatically infers the type as string for Client ID
+ appTokenSource, err := githubauth.NewApplicationTokenSource(clientID, privateKey)
+ if err != nil {
+  fmt.Println("Error creating application token source:", err)
+  return
+ }
+
+ installationTokenSource := githubauth.NewInstallationTokenSource(installationID, appTokenSource)
+
+ // oauth2.NewClient creates a new http.Client that adds an Authorization header with the token
+ httpClient := oauth2.NewClient(context.Background(), installationTokenSource)
+ githubClient := github.NewClient(httpClient)
+
+ _, _, err = githubClient.PullRequests.CreateComment(context.Background(), "owner", "repo", 1, &github.PullRequestComment{
+  Body: github.String("Awesome comment!"),
+ })
+ if err != nil {
+  fmt.Println("Error creating comment:", err)
+  return
+ }
+}
+```
+
+#### App ID (Legacy)
+
+```go
+package main
+
+import (
+ "context"
+ "fmt"
+ "os"
+ "strconv"
+
+ "github.com/google/go-github/v73/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -47,7 +109,8 @@ func main() {
  appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
  installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
 
- appTokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey)
+ // Explicitly cast to int64 for App ID - Go automatically infers the type
+ appTokenSource, err := githubauth.NewApplicationTokenSource(int64(appID), privateKey)
  if err != nil {
   fmt.Println("Error creating application token source:", err)
   return
@@ -55,12 +118,7 @@ func main() {
 
  installationTokenSource := githubauth.NewInstallationTokenSource(installationID, appTokenSource)
 
- // oauth2.NewClient create a new http.Client that adds an Authorization header with the token.
- // Transport src use oauth2.ReuseTokenSource to reuse the token.
- // The token will be reused until it expires.
- // The token will be refreshed if it's expired.
  httpClient := oauth2.NewClient(context.Background(), installationTokenSource)
-
  githubClient := github.NewClient(httpClient)
 
  _, _, err = githubClient.PullRequests.CreateComment(context.Background(), "owner", "repo", 1, &github.PullRequestComment{
@@ -75,9 +133,9 @@ func main() {
 
 ### Generate GitHub Application Token
 
-First of all you need to create a GitHub App and generate a private key.
+First, create a GitHub App and generate a private key. To authenticate as a GitHub App, you need to generate a JWT. [Generating a JWT for a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 
-To authenticate as a GitHub App, you need to generate a JWT. [Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+#### With Client ID (Recommended)
 
 ```go
 package main
@@ -92,9 +150,14 @@ import (
 
 func main() {
  privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
- appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
+ clientID := os.Getenv("GITHUB_APP_CLIENT_ID") // e.g., "Iv1.1234567890abcdef"
 
- tokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey, githubauth.WithApplicationTokenExpiration(5*time.Minute))
+ // Type automatically inferred as string
+ tokenSource, err := githubauth.NewApplicationTokenSource(
+  clientID, 
+  privateKey, 
+  githubauth.WithApplicationTokenExpiration(5*time.Minute),
+ )
  if err != nil {
   fmt.Println("Error creating token source:", err)
   return
@@ -106,13 +169,52 @@ func main() {
   return
  }
 
- fmt.Println("Generated token:", token.AccessToken)
+ fmt.Println("Generated JWT token:", token.AccessToken)
+}
+```
+
+#### With App ID
+
+```go
+package main
+
+import (
+ "fmt"
+ "os"
+ "strconv"
+ "time"
+
+ "github.com/jferrl/go-githubauth"
+)
+
+func main() {
+ privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
+ appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
+
+ // Type automatically inferred as int64
+ tokenSource, err := githubauth.NewApplicationTokenSource(
+  int64(appID), 
+  privateKey, 
+  githubauth.WithApplicationTokenExpiration(5*time.Minute),
+ )
+ if err != nil {
+  fmt.Println("Error creating token source:", err)
+  return
+ }
+
+ token, err := tokenSource.Token()
+ if err != nil {
+  fmt.Println("Error generating token:", err)
+  return
+ }
+
+ fmt.Println("Generated JWT token:", token.AccessToken)
 }
 ```
 
 ### Generate GitHub App Installation Token
 
-To authenticate as a GitHub App installation, you need to obtain an installation token.
+To authenticate as a GitHub App installation, you need to obtain an installation token using your GitHub App JWT.
 
 ```go
 package main
@@ -127,15 +229,17 @@ import (
 
 func main() {
  privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
- appID, _ := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
+ clientID := os.Getenv("GITHUB_APP_CLIENT_ID") // e.g., "Iv1.1234567890abcdef"
  installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
 
- appTokenSource, err := githubauth.NewApplicationTokenSource(appID, privateKey)
+ // Create GitHub App JWT token source with Client ID
+ appTokenSource, err := githubauth.NewApplicationTokenSource(clientID, privateKey)
  if err != nil {
   fmt.Println("Error creating application token source:", err)
   return
  }
 
+ // Create installation token source using the app token source
  installationTokenSource := githubauth.NewInstallationTokenSource(installationID, appTokenSource)
 
  token, err := installationTokenSource.Token()
@@ -147,6 +251,49 @@ func main() {
  fmt.Println("Generated installation token:", token.AccessToken)
 }
 ```
+
+## Migration from v1.x to v2.0.0
+
+v2.0.0 introduces breaking changes with Go generics support. Here's how to migrate:
+
+### ⚠️ Breaking Changes
+
+#### Removed Functions
+
+- ❌ `NewApplicationTokenSource(int64, []byte, ...opts)`
+
+#### New Unified Function
+
+- ✅ `NewApplicationTokenSource[T Identifier](T, []byte, ...opts)`
+
+### 🔧 Migration Guide
+
+#### Before (v1.x)
+
+```go
+// Using App ID
+tokenSource1, err := githubauth.NewApplicationTokenSource(12345, privateKey)
+
+// Using Client ID  
+tokenSource2, err := githubauth.NewApplicationTokenSourceWithClientID("Iv1.abc123", privateKey)
+```
+
+#### After (v2.0.0)
+
+```go
+// Using App ID - explicit int64 cast needed for type inference
+tokenSource1, err := githubauth.NewApplicationTokenSource(int64(12345), privateKey)
+
+// Using Client ID - works directly
+tokenSource2, err := githubauth.NewApplicationTokenSource("Iv1.abc123", privateKey)
+```
+
+### ✨ Benefits of Migration
+
+- **Type Safety**: Compile-time verification of identifier types
+- **Code Consistency**: Single function for all authentication types
+- **Future-Proof**: Ready for potential new GitHub identifier formats
+- **Enhanced Documentation**: Better godoc with GitHub API references
 
 ## Contributing
 
