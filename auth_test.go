@@ -24,48 +24,48 @@ func TestNewApplicationTokenSource(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		constructor func() (oauth2.TokenSource, error)
-		wantErr     bool
+		name    string
+		new     func() (oauth2.TokenSource, error)
+		wantErr bool
 	}{
 		{
 			name: "int64 application id is not provided",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource(int64(0), privateKey)
 			},
 			wantErr: true,
 		},
 		{
 			name: "string application id is not provided",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource("", privateKey)
 			},
 			wantErr: true,
 		},
 		{
 			name: "private key is not provided for int64",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource(int64(132), nil)
 			},
 			wantErr: true,
 		},
 		{
 			name: "private key is not provided for string",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource("Iv1.test", nil)
 			},
 			wantErr: true,
 		},
 		{
 			name: "valid application token source with int64",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource(int64(132), privateKey, WithApplicationTokenExpiration(15*time.Minute))
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid application token source with string",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource("Iv1.1234567890abcdef", privateKey, WithApplicationTokenExpiration(15*time.Minute))
 			},
 			wantErr: false,
@@ -73,7 +73,7 @@ func TestNewApplicationTokenSource(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := tt.constructor()
+			_, err := tt.new()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewApplicationTokenSource() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -82,7 +82,7 @@ func TestNewApplicationTokenSource(t *testing.T) {
 	}
 }
 
-func TestApplicationTokenSource_TokenGeneration(t *testing.T) {
+func TestApplicationTokenSource_Token(t *testing.T) {
 	privateKey, err := generatePrivateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -90,19 +90,19 @@ func TestApplicationTokenSource_TokenGeneration(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		constructor func() (oauth2.TokenSource, error)
+		new         func() (oauth2.TokenSource, error)
 		expectedIss string
 	}{
 		{
 			name: "numeric app id token generation",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource(int64(12345), privateKey)
 			},
 			expectedIss: "12345",
 		},
 		{
 			name: "client id token generation",
-			constructor: func() (oauth2.TokenSource, error) {
+			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource("Iv1.1234567890abcdef", privateKey)
 			},
 			expectedIss: "Iv1.1234567890abcdef",
@@ -111,7 +111,7 @@ func TestApplicationTokenSource_TokenGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tokenSource, err := tt.constructor()
+			tokenSource, err := tt.new()
 			if err != nil {
 				t.Fatalf("Failed to create token source: %v", err)
 			}
@@ -121,7 +121,6 @@ func TestApplicationTokenSource_TokenGeneration(t *testing.T) {
 				t.Fatalf("Failed to generate token: %v", err)
 			}
 
-			// Verify token properties
 			if token.AccessToken == "" {
 				t.Error("Token access token is empty")
 			}
@@ -133,8 +132,7 @@ func TestApplicationTokenSource_TokenGeneration(t *testing.T) {
 			}
 
 			// Parse and verify JWT claims
-			jwtToken, err := jwt.ParseWithClaims(token.AccessToken, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
-				// For testing, we need to get the public key from the private key
+			jwtToken, err := jwt.ParseWithClaims(token.AccessToken, &jwt.RegisteredClaims{}, func(_ *jwt.Token) (any, error) {
 				privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
 				if err != nil {
 					return nil, err
