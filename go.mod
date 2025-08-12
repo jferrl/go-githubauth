@@ -1,6 +1,6 @@
 module github.com/jferrl/go-githubauth
 
-go 1.24.4
+go 1.24.6
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -11,7 +11,7 @@ require (
 require (
 	github.com/google/go-github/v73 v73.0.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
-	golang.org/x/time v0.11.0 // indirect
+	golang.org/x/time v0.12.0 // indirect
 )
 
 require (

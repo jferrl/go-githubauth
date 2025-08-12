@@ -21,7 +21,7 @@ jobs:
       contents: read # for actions/checkout to fetch code
     strategy:
       matrix:
-        go-version: [1.x, 1.23.x]
+        go-version: [1.x, 1.24.x]
         platform: [ubuntu-latest]
         include:
           # only update test coverage stats with the most recent go version on linux
@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Cancel previous
-        uses: styfle/cancel-workflow-action@bb6001c4ea612bf59c3abfc4756fbceee4f870c7 #0.10.0
+        uses: styfle/cancel-workflow-action@85880fa0301c86cca9da44039ee3bb12d3bedbfa #0.12.1
         with:
           access_token: ${{ github.token }}
 
