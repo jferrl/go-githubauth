@@ -42,19 +42,16 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
-      # Get values for cache paths to be used in later steps
-      - id: cache-paths
-        run: |
-          echo "go-cache=$(go env GOCACHE)" >> $GITHUB_OUTPUT
-          echo "go-mod-cache=$(go env GOMODCACHE)" >> $GITHUB_OUTPUT
       - name: Cache go modules
         uses: actions/cache@v4
         with:
           path: |
-            ${{ steps.cache-paths.outputs.go-cache }}
-            ${{ steps.cache-paths.outputs.go-mod-cache }}
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: ${{ runner.os }}-go-
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-
+            ${{ runner.os }}-go-
 
       - name: Run go test
         run: go test ./... -coverprofile=coverage.out -covermode=atomic
