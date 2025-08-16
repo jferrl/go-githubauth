@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v69/github"
+	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/google/go-github/v73/github"
 	"github.com/migueleliasweb/go-github-mock/src/mock"
 	"golang.org/x/oauth2"
 )
@@ -22,44 +23,133 @@ func TestNewApplicationTokenSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	type args struct {
-		appID      int64
-		privateKey []byte
-		opts       []ApplicationTokenOpt
-	}
 	tests := []struct {
 		name    string
-		args    args
-		want    oauth2.TokenSource
+		new     func() (oauth2.TokenSource, error)
 		wantErr bool
 	}{
 		{
-			name:    "application id is not provided",
-			args:    args{},
-			wantErr: true,
-		},
-		{
-			name:    "private key is not provided",
-			args:    args{appID: 132},
-			wantErr: true,
-		},
-		{
-			name: "valid application token source",
-			args: args{
-				appID:      132,
-				privateKey: privateKey,
-				opts: []ApplicationTokenOpt{
-					WithApplicationTokenExpiration(15 * time.Minute),
-				},
+			name: "int64 application id is not provided",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource(int64(0), privateKey)
 			},
+			wantErr: true,
+		},
+		{
+			name: "string application id is not provided",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource("", privateKey)
+			},
+			wantErr: true,
+		},
+		{
+			name: "private key is not provided for int64",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource(int64(132), nil)
+			},
+			wantErr: true,
+		},
+		{
+			name: "private key is not provided for string",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource("Iv1.test", nil)
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid application token source with int64",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource(int64(132), privateKey, WithApplicationTokenExpiration(15*time.Minute))
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid application token source with string",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource("Iv1.1234567890abcdef", privateKey, WithApplicationTokenExpiration(15*time.Minute))
+			},
+			wantErr: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewApplicationTokenSource(tt.args.appID, tt.args.privateKey, tt.args.opts...)
+			_, err := tt.new()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewApplicationTokenSource() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+		})
+	}
+}
+
+func TestApplicationTokenSource_Token(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		new         func() (oauth2.TokenSource, error)
+		expectedIss string
+	}{
+		{
+			name: "numeric app id token generation",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource(int64(12345), privateKey)
+			},
+			expectedIss: "12345",
+		},
+		{
+			name: "client id token generation",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSource("Iv1.1234567890abcdef", privateKey)
+			},
+			expectedIss: "Iv1.1234567890abcdef",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokenSource, err := tt.new()
+			if err != nil {
+				t.Fatalf("Failed to create token source: %v", err)
+			}
+
+			token, err := tokenSource.Token()
+			if err != nil {
+				t.Fatalf("Failed to generate token: %v", err)
+			}
+
+			if token.AccessToken == "" {
+				t.Error("Token access token is empty")
+			}
+			if token.TokenType != "Bearer" {
+				t.Errorf("Expected token type 'Bearer', got %s", token.TokenType)
+			}
+			if token.Expiry.IsZero() {
+				t.Error("Token expiry is not set")
+			}
+
+			// Parse and verify JWT claims
+			jwtToken, err := jwt.ParseWithClaims(token.AccessToken, &jwt.RegisteredClaims{}, func(_ *jwt.Token) (any, error) {
+				privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
+				if err != nil {
+					return nil, err
+				}
+				return &privKey.PublicKey, nil
+			})
+			if err != nil {
+				t.Fatalf("Failed to parse JWT token: %v", err)
+			}
+
+			claims, ok := jwtToken.Claims.(*jwt.RegisteredClaims)
+			if !ok {
+				t.Fatal("Failed to get JWT claims")
+			}
+
+			if claims.Issuer != tt.expectedIss {
+				t.Errorf("Expected issuer %s, got %s", tt.expectedIss, claims.Issuer)
 			}
 		})
 	}
@@ -104,7 +194,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	appSrc, err := NewApplicationTokenSource(34434, privateKey, WithApplicationTokenExpiration(5*time.Minute))
+	appSrc, err := NewApplicationTokenSource(int64(34434), privateKey, WithApplicationTokenExpiration(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

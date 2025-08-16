@@ -1,8 +1,9 @@
 // Package githubauth provides utilities for GitHub authentication,
 // including generating and using GitHub App tokens and installation tokens.
-// The package is based on the go-github and golang.org/x/oauth2 libraries.
-// It implements a set of TokenSource interfaces for generating GitHub App and
-// installation tokens.
+//
+// This package implements oauth2.TokenSource interfaces for GitHub App
+// authentication and GitHub App installation token generation. It is built
+// on top of the go-github and golang.org/x/oauth2 libraries.
 package githubauth
 
 import (
@@ -14,48 +15,71 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v69/github"
+	"github.com/google/go-github/v73/github"
 	"golang.org/x/oauth2"
 )
 
 const (
-	// DefaultApplicationTokenExpiration is the default expiration time for the GitHub App token.
-	// The expiration time of the JWT, after which it can't be used to request an installation token.
-	// The time must be no more than 10 minutes into the future.
+	// DefaultApplicationTokenExpiration is the default expiration time for GitHub App tokens.
+	// The maximum allowed expiration is 10 minutes.
 	DefaultApplicationTokenExpiration = 10 * time.Minute
 
+	// bearerTokenType is the token type used for OAuth2 Bearer tokens.
 	bearerTokenType = "Bearer"
 )
 
-// applicationTokenSource represents a GitHub App token source.
-// See: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+// Identifier constrains GitHub App identifiers to int64 (App ID) or string (Client ID).
+type Identifier interface {
+	~int64 | ~string
+}
+
+// applicationTokenSource generates GitHub App JWTs for authentication.
+// JWTs are signed with RS256 and include iat, exp, and iss claims per GitHub's requirements.
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 type applicationTokenSource struct {
-	id         int64
+	issuer     string // App ID (numeric) or Client ID (alphanumeric)
 	privateKey *rsa.PrivateKey
 	expiration time.Duration
 }
 
-// ApplicationTokenOpt is a functional option for ApplicationTokenSource.
+// ApplicationTokenOpt is a functional option for configuring an applicationTokenSource.
 type ApplicationTokenOpt func(*applicationTokenSource)
 
-// WithApplicationTokenExpiration sets the expiration for the GitHub App token.
-// The expiration time of the JWT must be no more than 10 minutes into the future
-// and greater than 0. If the provided expiration is invalid, the default expiration is used.
-func WithApplicationTokenExpiration(expiration time.Duration) ApplicationTokenOpt {
+// WithApplicationTokenExpiration sets the JWT expiration duration.
+// Must be between 0 and 10 minutes per GitHub's JWT requirements. Invalid values default to 10 minutes.
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app#about-json-web-tokens-jwts
+func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 	return func(a *applicationTokenSource) {
-		if expiration > DefaultApplicationTokenExpiration || expiration <= 0 {
-			expiration = DefaultApplicationTokenExpiration
+		if exp > DefaultApplicationTokenExpiration || exp <= 0 {
+			exp = DefaultApplicationTokenExpiration
 		}
-		a.expiration = expiration
+		a.expiration = exp
 	}
 }
 
-// NewApplicationTokenSource creates a new GitHub App token source using the provided
-// application ID and private key. Functional options can be passed to customize the
-// token source.
-func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
-	if id == 0 {
-		return nil, errors.New("application id is required")
+// NewApplicationTokenSource creates a GitHub App JWT token source.
+// Accepts either int64 App ID or string Client ID. GitHub recommends Client IDs for new apps.
+// Private key must be in PEM format. Generated JWTs are RS256-signed with iat, exp, and iss claims.
+// JWTs expire in max 10 minutes and include clock drift protection (iat set 60s in past).
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+func NewApplicationTokenSource[T Identifier](id T, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
+	var issuer string
+	var isZeroValue bool
+
+	// Convert the identifier to string and check for zero values
+	switch v := any(id).(type) {
+	case int64:
+		isZeroValue = v == 0
+		issuer = strconv.FormatInt(v, 10)
+	case string:
+		isZeroValue = v == ""
+		issuer = v
+	default:
+		return nil, errors.New("unsupported identifier type")
+	}
+
+	if isZeroValue {
+		return nil, errors.New("application identifier is required")
 	}
 
 	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
@@ -64,7 +88,7 @@ func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationT
 	}
 
 	t := &applicationTokenSource{
-		id:         id,
+		issuer:     issuer,
 		privateKey: privKey,
 		expiration: DefaultApplicationTokenExpiration,
 	}
@@ -76,7 +100,9 @@ func NewApplicationTokenSource(id int64, privateKey []byte, opts ...ApplicationT
 	return t, nil
 }
 
-// Token generates a new GitHub App token for authenticating as a GitHub App.
+// Token generates a GitHub App JWT with required claims: iat, exp, iss, and alg.
+// The iat claim is set 60 seconds in the past to account for clock drift.
+// Generated JWTs can be used with "Authorization: Bearer" header for GitHub API requests.
 func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	// To protect against clock drift, set the issuance time 60 seconds in the past.
 	now := time.Now().Add(-60 * time.Second)
@@ -85,16 +111,16 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		Issuer:    strconv.FormatInt(t.id, 10),
+		Issuer:    t.issuer,
 	})
 
-	tokenString, err := token.SignedString(t.privateKey)
+	accessToken, err := token.SignedString(t.privateKey)
 	if err != nil {
 		return nil, err
 	}
 
 	return &oauth2.Token{
-		AccessToken: tokenString,
+		AccessToken: accessToken,
 		TokenType:   bearerTokenType,
 		Expiry:      expiresAt,
 	}, nil
@@ -122,9 +148,9 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 	}
 }
 
-// WithEnterpriseURLs sets the base URL and upload URL for the GitHub App installation token source.
-// This should passed after WithHTTPClient to ensure the HTTP client is updated with the new URLs.
-// If the provided URLs are invalid, the default GitHub URLs are used.
+// WithEnterpriseURLs sets the base URL and upload URL for GitHub Enterprise Server.
+// This option should be used after WithHTTPClient to ensure the HTTP client is properly configured.
+// If the provided URLs are invalid, the option is ignored and default GitHub URLs are used.
 func WithEnterpriseURLs(baseURL, uploadURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		enterpriseClient, err := i.client.WithEnterpriseURLs(baseURL, uploadURL)
@@ -143,7 +169,10 @@ func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 	}
 }
 
-// installationTokenSource represents a GitHub App installation token source.
+// installationTokenSource represents a GitHub App installation token source
+// that generates access tokens for authenticating as a specific GitHub App installation.
+//
+// See: https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-an-installation-access-token-for-an-app
 type installationTokenSource struct {
 	id     int64
 	ctx    context.Context
@@ -152,9 +181,9 @@ type installationTokenSource struct {
 	opts   *github.InstallationTokenOptions
 }
 
-// NewInstallationTokenSource creates a new GitHub App installation token source using the provided
-// installation ID and token source. Functional options can be passed to customize the
-// installation token source.
+// NewInstallationTokenSource creates a GitHub App installation token source.
+// Requires installation ID and a GitHub App JWT token source for authentication.
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	client := &http.Client{
 		Transport: &oauth2.Transport{
