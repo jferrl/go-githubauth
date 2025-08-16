@@ -29,7 +29,6 @@
 
 ### Requirements
 
-- **Go 1.18+** (required for generics support)
 - This package is designed to be used with the `golang.org/x/oauth2` package
 
 ## Installation
