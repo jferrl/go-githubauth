@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0] - 2025-08-16
+
+### Added
+
+- **Go Generics Support**: Introduced generic constraint `Identifier` interface supporting both `int64` App IDs and `string` Client IDs in a single `NewApplicationTokenSource` function
+- **Type-Safe Authentication**: Automatic type inference eliminates the need for separate functions while maintaining type safety
+- **Enhanced Documentation**: Official GitHub API references and JWT technical details while maintaining godoc compliance
+
+### Changed
+
+- **BREAKING**: Unified `NewApplicationTokenSource` function now uses Go generics to support both int64 App IDs and string Client IDs
+- **BREAKING**: Go version requirement bumped to 1.21+ (required for generics support)
+- Updated Go version to 1.25 in CI workflows and documentation
+- Improved CI workflow configurations with updated GitHub Actions
+
+### Fixed
+
+- Eliminated code duplication between App ID and Client ID authentication flows
+- Fixed go version usage from go.mod in GitHub Actions build (#12)
+
+### Dependencies
+
+- Added Dependabot configuration to keep dependencies up to date (#13)
+- Bumped `styfle/cancel-workflow-action` from 0.10.0 to 0.12.1 (#15)
+- Bumped `actions/checkout` from 4 to 5 (#18)
+- Bumped `codecov/codecov-action` from 4 to 5 (#19)
+
+**Contributors**: @jferrl, @grinish21
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.2.1...v2.0.0>
+
 ## [v1.2.1] - 2025-08-08
 
 ### Fixed
