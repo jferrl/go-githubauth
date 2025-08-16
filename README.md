@@ -273,9 +273,6 @@ v2.0.0 introduces breaking changes with Go generics support. Here's how to migra
 ```go
 // Using App ID
 tokenSource1, err := githubauth.NewApplicationTokenSource(12345, privateKey)
-
-// Using Client ID  
-tokenSource2, err := githubauth.NewApplicationTokenSourceWithClientID("Iv1.abc123", privateKey)
 ```
 
 #### After (v2.0.0)
