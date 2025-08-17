@@ -1,19 +1,19 @@
 # go-githubauth
 
-[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=blue)](https://pkg.go.dev/github.com/jferrl/go-githubauth/v2)
+[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=blue)](https://pkg.go.dev/github.com/jferrl/go-githubauth)
 [![Test Status](https://github.com/jferrl/go-githubauth/workflows/tests/badge.svg)](https://github.com/jferrl/go-githubauth/actions?query=workflow%3Atests)
 [![codecov](https://codecov.io/gh/jferrl/go-githubauth/branch/main/graph/badge.svg?token=68I4BZF235)](https://codecov.io/gh/jferrl/go-githubauth)
 [![Go Report Card](https://goreportcard.com/badge/github.com/jferrl/go-githubauth)](https://goreportcard.com/report/github.com/jferrl/go-githubauth)
 
 `go-githubauth` is a Go package that provides utilities for GitHub authentication, including generating and using GitHub App tokens and installation tokens.
 
-**v2.0.0** introduces Go generics support for unified authentication with both numeric App IDs and alphanumeric Client IDs in a single, type-safe API.
+**v1.3.0** introduces Go generics support for unified authentication with both numeric App IDs and alphanumeric Client IDs in a single, type-safe API.
 
 ## Features
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
 
-### v2.0.0 Features
+### v1.3.0 Features
 
 - **🔥 Go Generics Support**: Single `NewApplicationTokenSource` function supports both `int64` App IDs and `string` Client IDs
 - **🛡️ Type Safety**: Compile-time verification of identifier types through generic constraints
@@ -36,7 +36,7 @@
 To use `go-githubauth` in your project, you need to have Go installed. You can get the package via:
 
 ```bash
-go get -u github.com/jferrl/go-githubauth/v2
+go get -u github.com/jferrl/go-githubauth
 ```
 
 ## Usage
@@ -55,7 +55,7 @@ import (
  "strconv"
 
  "github.com/google/go-github/v73/github"
- "github.com/jferrl/go-githubauth/v2"
+ "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
 
@@ -99,7 +99,7 @@ import (
  "strconv"
 
  "github.com/google/go-github/v73/github"
- "github.com/jferrl/go-githubauth/v2"
+ "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
 
@@ -144,7 +144,7 @@ import (
  "os"
  "time"
 
- "github.com/jferrl/go-githubauth/v2"
+ "github.com/jferrl/go-githubauth"
 )
 
 func main() {
@@ -183,7 +183,7 @@ import (
  "strconv"
  "time"
 
- "github.com/jferrl/go-githubauth/v2"
+ "github.com/jferrl/go-githubauth"
 )
 
 func main() {
@@ -223,7 +223,7 @@ import (
  "os"
  "strconv"
 
- "github.com/jferrl/go-githubauth/v2"
+ "github.com/jferrl/go-githubauth"
 )
 
 func main() {
@@ -250,48 +250,6 @@ func main() {
  fmt.Println("Generated installation token:", token.AccessToken)
 }
 ```
-
-## Migration from v1.x to v2.0.0
-
-v2.0.0 introduces breaking changes with Go generics support. Here's how to migrate:
-
-### ⚠️ Breaking Changes
-
-#### Removed Functions
-
-- ❌ `NewApplicationTokenSource(int64, []byte, ...opts)`
-
-#### New Unified Function
-
-- ✅ `NewApplicationTokenSource[T Identifier](T, []byte, ...opts)`
-
-### 🔧 Migration Guide
-
-#### Before (v1.x)
-
-```go
-// Using App ID
-tokenSource1, err := githubauth.NewApplicationTokenSource(12345, privateKey)
-```
-
-#### After (v2.0.0)
-
-```go
-import "github.com/jferrl/go-githubauth/v2"
-
-// Using App ID - explicit int64 cast needed for type inference
-tokenSource1, err := githubauth.NewApplicationTokenSource(int64(12345), privateKey)
-
-// Using Client ID - works directly
-tokenSource2, err := githubauth.NewApplicationTokenSource("Iv1.abc123", privateKey)
-```
-
-### ✨ Benefits of Migration
-
-- **Type Safety**: Compile-time verification of identifier types
-- **Code Consistency**: Single function for all authentication types
-- **Future-Proof**: Ready for potential new GitHub identifier formats
-- **Enhanced Documentation**: Better godoc with GitHub API references
 
 ## Contributing
 

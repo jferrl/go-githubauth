@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.0.0] - 2025-08-16
+## [v1.3.0] - 2025-08-16
 
 ### Added
 
@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING**: Unified `NewApplicationTokenSource` function now uses Go generics to support both int64 App IDs and string Client IDs
-- **BREAKING**: Go version requirement bumped to 1.21+ (required for generics support)
+- Unified `NewApplicationTokenSource` function now uses Go generics to support both int64 App IDs and string Client IDs
+- Go version requirement bumped to 1.21+ (required for generics support)
 - Updated Go version to 1.25 in CI workflows and documentation
 - Improved CI workflow configurations with updated GitHub Actions
 
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Contributors**: @jferrl, @grinish21
 
-**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.2.1...v2.0.0>
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.2.1...v1.3.0>
 
 ## [v1.2.1] - 2025-08-08
 
