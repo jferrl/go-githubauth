@@ -1,6 +1,6 @@
 # go-githubauth
 
-[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=blue)](https://pkg.go.dev/github.com/jferrl/go-githubauth)
+[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=blue)](https://pkg.go.dev/github.com/jferrl/go-githubauth/v2)
 [![Test Status](https://github.com/jferrl/go-githubauth/workflows/tests/badge.svg)](https://github.com/jferrl/go-githubauth/actions?query=workflow%3Atests)
 [![codecov](https://codecov.io/gh/jferrl/go-githubauth/branch/main/graph/badge.svg?token=68I4BZF235)](https://codecov.io/gh/jferrl/go-githubauth)
 [![Go Report Card](https://goreportcard.com/badge/github.com/jferrl/go-githubauth)](https://goreportcard.com/report/github.com/jferrl/go-githubauth)
@@ -36,7 +36,7 @@
 To use `go-githubauth` in your project, you need to have Go installed. You can get the package via:
 
 ```bash
-go get -u github.com/jferrl/go-githubauth
+go get -u github.com/jferrl/go-githubauth/v2
 ```
 
 ## Usage
@@ -55,7 +55,7 @@ import (
  "strconv"
 
  "github.com/google/go-github/v73/github"
- "github.com/jferrl/go-githubauth"
+ "github.com/jferrl/go-githubauth/v2"
  "golang.org/x/oauth2"
 )
 
@@ -99,7 +99,7 @@ import (
  "strconv"
 
  "github.com/google/go-github/v73/github"
- "github.com/jferrl/go-githubauth"
+ "github.com/jferrl/go-githubauth/v2"
  "golang.org/x/oauth2"
 )
 
@@ -144,7 +144,7 @@ import (
  "os"
  "time"
 
- "github.com/jferrl/go-githubauth"
+ "github.com/jferrl/go-githubauth/v2"
 )
 
 func main() {
@@ -183,7 +183,7 @@ import (
  "strconv"
  "time"
 
- "github.com/jferrl/go-githubauth"
+ "github.com/jferrl/go-githubauth/v2"
 )
 
 func main() {
@@ -223,7 +223,7 @@ import (
  "os"
  "strconv"
 
- "github.com/jferrl/go-githubauth"
+ "github.com/jferrl/go-githubauth/v2"
 )
 
 func main() {
@@ -277,6 +277,8 @@ tokenSource1, err := githubauth.NewApplicationTokenSource(12345, privateKey)
 #### After (v2.0.0)
 
 ```go
+import "github.com/jferrl/go-githubauth/v2"
+
 // Using App ID - explicit int64 cast needed for type inference
 tokenSource1, err := githubauth.NewApplicationTokenSource(int64(12345), privateKey)
 
