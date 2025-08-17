@@ -1,4 +1,4 @@
-module github.com/jferrl/go-githubauth
+module github.com/jferrl/go-githubauth/v2
 
 go 1.25
 
