@@ -9,6 +9,14 @@
 
 **v1.3.0** introduces Go generics support for unified authentication with both numeric App IDs and alphanumeric Client IDs in a single, type-safe API.
 
+---
+
+⭐ **Found this package useful?** Give it a star on GitHub! Your support helps others discover this project and motivates continued development.
+
+[![Star this repo](https://img.shields.io/github/stars/jferrl/go-githubauth?style=social)](https://github.com/jferrl/go-githubauth/stargazers)
+
+---
+
 ## Features
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
