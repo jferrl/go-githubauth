@@ -15,6 +15,10 @@
 
 [![Star this repo](https://img.shields.io/github/stars/jferrl/go-githubauth?style=social)](https://github.com/jferrl/go-githubauth/stargazers)
 
+**Share this project:**
+[![Share on X](https://img.shields.io/badge/share%20on-X-1DA1F2?logo=x&style=flat-square)](https://twitter.com/intent/tweet?text=Check%20out%20go-githubauth%20-%20a%20Go%20package%20for%20GitHub%20App%20authentication%20with%20JWT%20and%20installation%20tokens!&url=https://github.com/jferrl/go-githubauth&hashtags=golang,github,authentication,jwt)
+[![Share on Reddit](https://img.shields.io/badge/share%20on-reddit-FF4500?logo=reddit&style=flat-square)](https://reddit.com/submit?url=https://github.com/jferrl/go-githubauth&title=go-githubauth:%20Go%20package%20for%20GitHub%20App%20authentication)
+
 ---
 
 ## Features
