@@ -185,17 +185,13 @@ type installationTokenSource struct {
 // Requires installation ID and a GitHub App JWT token source for authentication.
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
-	client := &http.Client{
-		Transport: &oauth2.Transport{
-			Source: src,
-		},
-	}
+	ctx := context.Background()
 
 	i := &installationTokenSource{
 		id:     id,
-		ctx:    context.Background(),
+		ctx:    ctx,
 		src:    src,
-		client: github.NewClient(client),
+		client: github.NewClient(oauth2.NewClient(ctx, src)),
 	}
 
 	for _, opt := range opts {
@@ -216,5 +212,39 @@ func (t *installationTokenSource) Token() (*oauth2.Token, error) {
 		AccessToken: token.GetToken(),
 		TokenType:   bearerTokenType,
 		Expiry:      token.GetExpiresAt().Time,
+	}, nil
+}
+
+// personalAccessTokenSource represents a static GitHub personal access token source
+// that provides OAuth2 authentication using a pre-generated token.
+// Personal access tokens can be classic or fine-grained and provide access to repositories
+// based on the token's configured permissions and scope.
+//
+// See: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+type personalAccessTokenSource struct {
+	token string
+}
+
+// NewPersonalAccessTokenSource creates a token source for GitHub personal access tokens.
+// The provided token should be a valid GitHub personal access token (classic or fine-grained).
+// This token source returns the same token value for all Token() calls without expiration,
+// making it suitable for long-lived authentication scenarios.
+func NewPersonalAccessTokenSource(token string) oauth2.TokenSource {
+	return &personalAccessTokenSource{
+		token: token,
+	}
+}
+
+// Token returns the configured personal access token as an OAuth2 token.
+// The returned token has no expiry time since personal access tokens
+// remain valid until manually revoked or expired by GitHub.
+func (t *personalAccessTokenSource) Token() (*oauth2.Token, error) {
+	if t.token == "" {
+		return nil, errors.New("token not provided")
+	}
+
+	return &oauth2.Token{
+		AccessToken: t.token,
+		TokenType:   bearerTokenType,
 	}, nil
 }

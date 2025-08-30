@@ -257,6 +257,108 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	}
 }
 
+func TestNewPersonalAccessTokenSource(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  oauth2.TokenSource
+	}{
+		{
+			name:  "empty token",
+			token: "",
+			want:  &personalAccessTokenSource{token: ""},
+		},
+		{
+			name:  "classic personal access token",
+			token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456",
+			want:  &personalAccessTokenSource{token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456"},
+		},
+		{
+			name:  "fine-grained personal access token",
+			token: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			want:  &personalAccessTokenSource{token: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NewPersonalAccessTokenSource(tt.token)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("NewPersonalAccessTokenSource() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPersonalAccessTokenSource_Token(t *testing.T) {
+	tests := []struct {
+		name    string
+		token   string
+		want    *oauth2.Token
+		wantErr bool
+	}{
+		{
+			name:    "empty token returns error",
+			token:   "",
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name:  "whitespace only token returns error",
+			token: "   ",
+			want: &oauth2.Token{
+				AccessToken: "   ",
+				TokenType:   "Bearer",
+			},
+		},
+		{
+			name:  "classic personal access token",
+			token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456",
+			want: &oauth2.Token{
+				AccessToken: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456",
+				TokenType:   "Bearer",
+			},
+		},
+		{
+			name:  "fine-grained personal access token",
+			token: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+			want: &oauth2.Token{
+				AccessToken: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+				TokenType:   "Bearer",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokenSource := NewPersonalAccessTokenSource(tt.token)
+			got, err := tokenSource.Token()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("personalAccessTokenSource.Token() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr {
+				// For error cases, verify that got is nil
+				if got != nil {
+					t.Errorf("personalAccessTokenSource.Token() should return nil on error, got %v", got)
+				}
+				return
+			}
+
+			if got.AccessToken != tt.want.AccessToken {
+				t.Errorf("personalAccessTokenSource.Token() AccessToken = %v, want %v", got.AccessToken, tt.want.AccessToken)
+			}
+			if got.TokenType != tt.want.TokenType {
+				t.Errorf("personalAccessTokenSource.Token() TokenType = %v, want %v", got.TokenType, tt.want.TokenType)
+			}
+			if !got.Expiry.IsZero() {
+				t.Errorf("personalAccessTokenSource.Token() Expiry should be zero, got %v", got.Expiry)
+			}
+		})
+	}
+}
+
 func generatePrivateKey() ([]byte, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
