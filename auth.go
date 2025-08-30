@@ -97,7 +97,7 @@ func NewApplicationTokenSource[T Identifier](id T, privateKey []byte, opts ...Ap
 		opt(t)
 	}
 
-	return t, nil
+	return oauth2.ReuseTokenSource(nil, t), nil
 }
 
 // Token generates a GitHub App JWT with required claims: iat, exp, iss, and alg.
