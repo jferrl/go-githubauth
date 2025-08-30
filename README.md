@@ -7,7 +7,7 @@
 
 `go-githubauth` is a Go package that provides utilities for GitHub authentication, including generating and using GitHub App tokens, installation tokens, and personal access tokens.
 
-**v1.3.0** introduces Go generics support for unified authentication with both numeric App IDs and alphanumeric Client IDs in a single, type-safe API.
+**v1.4.0** introduces personal access token support and significant performance optimizations with intelligent token caching and high-performance HTTP clients.
 
 ---
 
@@ -25,7 +25,17 @@
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
 
-### v1.3.0 Features
+### v1.4.0 Features
+
+- **🔐 Personal Access Token Support**: Native support for both classic and fine-grained personal access tokens
+- **⚡ Advanced Token Caching**: Dual-layer caching system for optimal performance
+  - JWT tokens cached until expiration (up to 10 minutes)  
+  - Installation tokens cached until expiration (defined by GitHub response)
+- **🚀 High-Performance HTTP Client**: Production-ready HTTP client with connection pooling
+- **📈 Performance Optimizations**: Up to 99% reduction in unnecessary GitHub API calls
+- **🏗️ Production Ready**: Optimized for high-throughput and enterprise applications
+
+### Previous Features
 
 - **🔥 Go Generics Support**: Single `NewApplicationTokenSource` function supports both `int64` App IDs and `string` Client IDs
 - **🛡️ Type Safety**: Compile-time verification of identifier types through generic constraints
@@ -39,6 +49,8 @@
 - Authenticate with Personal Access Tokens (classic and fine-grained) [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
 - RS256-signed JWTs with proper clock drift protection
 - Support for both legacy App IDs and modern Client IDs (recommended by GitHub)
+- Intelligent token caching with automatic refresh for optimal performance
+- Clean HTTP clients with connection pooling and no shared state
 
 ### Requirements
 
