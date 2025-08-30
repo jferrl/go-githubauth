@@ -35,7 +35,7 @@
 - **📈 Performance Optimizations**: Up to 99% reduction in unnecessary GitHub API calls
 - **🏗️ Production Ready**: Optimized for high-throughput and enterprise applications
 
-### Previous Features
+### Other Features
 
 - **🔥 Go Generics Support**: Single `NewApplicationTokenSource` function supports both `int64` App IDs and `string` Client IDs
 - **🛡️ Type Safety**: Compile-time verification of identifier types through generic constraints
