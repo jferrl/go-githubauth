@@ -187,18 +187,24 @@ type installationTokenSource struct {
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	ctx := context.Background()
 
+	httpClient := cleanHTTPClient()
+	httpClient.Transport = &oauth2.Transport{
+		Source: oauth2.ReuseTokenSource(nil, src),
+		Base:   httpClient.Transport,
+	}
+
 	i := &installationTokenSource{
 		id:     id,
 		ctx:    ctx,
 		src:    src,
-		client: github.NewClient(oauth2.NewClient(ctx, src)),
+		client: github.NewClient(httpClient),
 	}
 
 	for _, opt := range opts {
 		opt(i)
 	}
 
-	return i
+	return oauth2.ReuseTokenSource(nil, i)
 }
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
