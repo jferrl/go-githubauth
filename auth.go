@@ -61,6 +61,11 @@ func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 // Accepts either int64 App ID or string Client ID. GitHub recommends Client IDs for new apps.
 // Private key must be in PEM format. Generated JWTs are RS256-signed with iat, exp, and iss claims.
 // JWTs expire in max 10 minutes and include clock drift protection (iat set 60s in past).
+//
+// The returned token source is wrapped in oauth2.ReuseTokenSource to prevent unnecessary
+// token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
+// prevents re-wrapping automatically.
+//
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 func NewApplicationTokenSource[T Identifier](id T, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
 	var issuer string
@@ -183,6 +188,11 @@ type installationTokenSource struct {
 
 // NewInstallationTokenSource creates a GitHub App installation token source.
 // Requires installation ID and a GitHub App JWT token source for authentication.
+//
+// The returned token source is wrapped in oauth2.ReuseTokenSource to prevent unnecessary
+// token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
+// prevents re-wrapping automatically.
+//
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	ctx := context.Background()
