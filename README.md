@@ -28,19 +28,12 @@
 ### v1.4.0 Features
 
 - **🔐 Personal Access Token Support**: Native support for both classic and fine-grained personal access tokens
-- **⚡ Advanced Token Caching**: Dual-layer caching system for optimal performance
+- **⚡ Token Caching**: Dual-layer caching system for optimal performance
   - JWT tokens cached until expiration (up to 10 minutes)  
   - Installation tokens cached until expiration (defined by GitHub response)
-- **🚀 High-Performance HTTP Client**: Production-ready HTTP client with connection pooling
+- **🚀 Pooled HTTP Client**: Production-ready HTTP client with connection pooling
 - **📈 Performance Optimizations**: Up to 99% reduction in unnecessary GitHub API calls
 - **🏗️ Production Ready**: Optimized for high-throughput and enterprise applications
-
-### Other Features
-
-- **🔥 Go Generics Support**: Single `NewApplicationTokenSource` function supports both `int64` App IDs and `string` Client IDs
-- **🛡️ Type Safety**: Compile-time verification of identifier types through generic constraints
-- **⚡ Type Inference**: Automatic type detection - no need to specify generic parameters explicitly
-- **📖 Enhanced Documentation**: Official GitHub API references and comprehensive JWT details
 
 ### Core Capabilities
 
