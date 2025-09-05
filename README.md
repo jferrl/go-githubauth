@@ -315,7 +315,7 @@ func main() {
 1. **Classic Personal Access Token**: Visit [GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)](https://github.com/settings/tokens)
 2. **Fine-grained Personal Access Token**: Visit [GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
 
-**Security Note**: Store your personal access tokens securely and never commit them to version control. Use environment variables or secure credential management systems.
+** 🔐 Security Note **: Store your personal access tokens securely and never commit them to version control. Use environment variables or secure credential management systems.
 
 ## Contributing
 
