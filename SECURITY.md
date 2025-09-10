@@ -7,7 +7,7 @@ We actively maintain and provide security updates for the following versions of 
 | Version | Supported          |
 | ------- | ------------------ |
 | 1.4.x   | :white_check_mark: |
-| < 1.3   | :x:                |
+| < 1.4   | :x:                |
 
 Please ensure you are using a supported version to receive security updates.
 
