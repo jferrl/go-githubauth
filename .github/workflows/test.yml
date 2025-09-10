@@ -21,11 +21,11 @@ jobs:
       contents: read # for actions/checkout to fetch code
     strategy:
       matrix:
-        go-version: [1.x, 1.25.x]
+        go-version: [1.25.x]
         platform: [ubuntu-latest]
         include:
           # only update test coverage stats with the most recent go version on linux
-          - go-version: 1.x
+          - go-version: 1.25.x
             platform: ubuntu-latest
             update-coverage: true
     runs-on: ${{ matrix.platform }}
