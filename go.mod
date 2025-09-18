@@ -4,11 +4,12 @@ go 1.25
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
-	github.com/google/go-github/v73 v73.0.0
+	github.com/google/go-github/v74 v74.0.0
 	golang.org/x/oauth2 v0.31.0
 )
 
 require (
+	github.com/google/go-github/v73 v73.0.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	golang.org/x/time v0.12.0 // indirect
 )

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v73/github"
+	"github.com/google/go-github/v74/github"
 	"github.com/migueleliasweb/go-github-mock/src/mock"
 	"golang.org/x/oauth2"
 )
