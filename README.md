@@ -72,7 +72,7 @@ import (
  "os"
  "strconv"
 
- "github.com/google/go-github/v73/github"
+ "github.com/google/go-github/v74/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -116,7 +116,7 @@ import (
  "os"
  "strconv"
 
- "github.com/google/go-github/v73/github"
+ "github.com/google/go-github/v74/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -283,7 +283,7 @@ import (
  "fmt"
  "os"
 
- "github.com/google/go-github/v73/github"
+ "github.com/google/go-github/v74/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
