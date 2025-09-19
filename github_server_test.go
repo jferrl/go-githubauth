@@ -25,7 +25,7 @@ func withRequestMatch(endpoint string, response any) mockOption {
 	return func(m *mockedHTTPClient) {
 		m.handlers[endpoint] = func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 		}
 	}
 }
@@ -64,7 +64,7 @@ func newMockedHTTPClient(opts ...mockOption) (*http.Client, func()) {
 		}
 
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"message":"Not Found"}`))
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	}))
 
 	client := &http.Client{
