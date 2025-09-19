@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.1] - 2025-09-19
+
+### Changed
+
+- **Enhanced Token Reuse**: Implemented `ReuseTokenSource` in `NewApplicationTokenSource` for improved token caching efficiency
+- **Dependency Updates**: Bumped `golang.org/x/oauth2` from 0.30.0 to 0.31.0
+- **CI/CD Improvements**: Updated GitHub Actions dependencies and workflow permissions
+  - Bumped `actions/setup-go` from 5 to 6
+  - Bumped `actions/checkout` from 4 to 5
+- **Library Upgrade**: Upgraded `github.com/google/go-github` to v74
+
+### Fixed
+
+- **Security**: Fixed code scanning alert regarding workflow permissions
+
+### Dependencies
+
+- Bumped `golang.org/x/oauth2` from 0.30.0 to 0.31.0 (#25)
+- Bumped `actions/setup-go` from 5 to 6 (#26)
+- Bumped `actions/checkout` from 4 to 5 (#28)
+- Upgraded `github.com/google/go-github` to v74 (#29)
+
+**Contributors**: @jferrl, @krancour (first contribution)
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.4.0...v1.4.1>
+
 ## [v1.4.0] - 2025-08-30
 
 ### Added

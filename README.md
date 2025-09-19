@@ -7,7 +7,7 @@
 
 `go-githubauth` is a Go package that provides utilities for GitHub authentication, including generating and using GitHub App tokens, installation tokens, and personal access tokens.
 
-**v1.4.0** introduces personal access token support and significant performance optimizations with intelligent token caching and high-performance HTTP clients.
+**v1.4.x** introduces personal access token support and significant performance optimizations with intelligent token caching and high-performance HTTP clients.
 
 ---
 
