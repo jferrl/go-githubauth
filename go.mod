@@ -8,13 +8,4 @@ require (
 	golang.org/x/oauth2 v0.31.0
 )
 
-require (
-	github.com/google/go-github/v73 v73.0.0 // indirect
-	github.com/gorilla/mux v1.8.1 // indirect
-	golang.org/x/time v0.12.0 // indirect
-)
-
-require (
-	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/migueleliasweb/go-github-mock v1.4.0
-)
+require github.com/google/go-querystring v1.1.0 // indirect

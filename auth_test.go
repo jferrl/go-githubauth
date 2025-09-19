@@ -13,7 +13,6 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v74/github"
-	"github.com/migueleliasweb/go-github-mock/src/mock"
 	"golang.org/x/oauth2"
 )
 
@@ -159,9 +158,9 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	now := time.Now().UTC()
 	expiration := now.Add(10 * time.Minute)
 
-	mockedHTTPClient := mock.NewMockedHTTPClient(
-		mock.WithRequestMatch(
-			mock.PostAppInstallationsAccessTokensByInstallationId,
+	mockedHTTPClient, cleanupSuccess := newMockedHTTPClient(
+		withRequestMatch(
+			postAppInstallationsAccessTokensByInstallationID,
 			github.InstallationToken{
 				Token: github.Ptr("mocked-installation-token"),
 				ExpiresAt: &github.Timestamp{
@@ -179,15 +178,17 @@ func Test_installationTokenSource_Token(t *testing.T) {
 			},
 		),
 	)
+	defer cleanupSuccess()
 
-	errMockedHTTPClient := mock.NewMockedHTTPClient(
-		mock.WithRequestMatchHandler(
-			mock.PostAppInstallationsAccessTokensByInstallationId,
+	errMockedHTTPClient, cleanupError := newMockedHTTPClient(
+		withRequestMatchHandler(
+			postAppInstallationsAccessTokensByInstallationID,
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
 			}),
 		))
+	defer cleanupError()
 
 	privateKey, err := generatePrivateKey()
 	if err != nil {
