@@ -57,7 +57,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusCreated)
-					json.NewEncoder(w).Encode(InstallationToken{
+					_ = json.NewEncoder(w).Encode(InstallationToken{
 						Token:     "test-token",
 						ExpiresAt: time.Now().Add(1 * time.Hour),
 					})
@@ -73,7 +73,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusBadRequest)
-					w.Write([]byte(`{"message":"Bad Request"}`))
+					_, _ = w.Write([]byte(`{"message":"Bad Request"}`))
 				}))
 			},
 			opts:           nil,
@@ -85,7 +85,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusUnauthorized)
-					w.Write([]byte(`{"message":"Unauthorized"}`))
+					_, _ = w.Write([]byte(`{"message":"Unauthorized"}`))
 				}))
 			},
 			opts:           nil,
@@ -97,7 +97,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusForbidden)
-					w.Write([]byte(`{"message":"Forbidden"}`))
+					_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
 				}))
 			},
 			opts:           nil,
@@ -109,7 +109,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
-					w.Write([]byte(`{"message":"Not Found"}`))
+					_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 				}))
 			},
 			opts:           nil,
@@ -121,7 +121,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusCreated)
-					w.Write([]byte(`{invalid json`))
+					_, _ = w.Write([]byte(`{invalid json`))
 				}))
 			},
 			opts:           nil,
@@ -133,7 +133,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusCreated)
-					json.NewEncoder(w).Encode(InstallationToken{
+					_ = json.NewEncoder(w).Encode(InstallationToken{
 						Token:     "test-token",
 						ExpiresAt: time.Now().Add(1 * time.Hour),
 					})
@@ -147,7 +147,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusOK)
-					json.NewEncoder(w).Encode(InstallationToken{
+					_ = json.NewEncoder(w).Encode(InstallationToken{
 						Token:     "test-token",
 						ExpiresAt: time.Now().Add(1 * time.Hour),
 					})
@@ -201,7 +201,7 @@ func Test_Ptr(t *testing.T) {
 		s := "test"
 		p := Ptr(s)
 		if p == nil {
-			t.Error("Ptr() returned nil")
+			t.Fatal("Ptr() returned nil")
 		}
 		if *p != s {
 			t.Errorf("Ptr() = %v, want %v", *p, s)
@@ -212,7 +212,7 @@ func Test_Ptr(t *testing.T) {
 		i := 42
 		p := Ptr(i)
 		if p == nil {
-			t.Error("Ptr() returned nil")
+			t.Fatal("Ptr() returned nil")
 		}
 		if *p != i {
 			t.Errorf("Ptr() = %v, want %v", *p, i)
@@ -223,7 +223,7 @@ func Test_Ptr(t *testing.T) {
 		i := int64(123456)
 		p := Ptr(i)
 		if p == nil {
-			t.Error("Ptr() returned nil")
+			t.Fatal("Ptr() returned nil")
 		}
 		if *p != i {
 			t.Errorf("Ptr() = %v, want %v", *p, i)
@@ -252,7 +252,7 @@ func Test_createInstallationToken_ErrorPaths(t *testing.T) {
 		client := newGitHubClient(&http.Client{})
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(InstallationToken{
+			_ = json.NewEncoder(w).Encode(InstallationToken{
 				Token:     "test-token",
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 			})
