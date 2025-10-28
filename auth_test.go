@@ -12,7 +12,6 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
 )
 
@@ -161,18 +160,16 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	mockedHTTPClient, cleanupSuccess := newMockedHTTPClient(
 		withRequestMatch(
 			postAppInstallationsAccessTokensByInstallationID,
-			github.InstallationToken{
-				Token: github.Ptr("mocked-installation-token"),
-				ExpiresAt: &github.Timestamp{
-					Time: expiration,
+			InstallationToken{
+				Token:     "mocked-installation-token",
+				ExpiresAt: expiration,
+				Permissions: &InstallationPermissions{
+					PullRequests: Ptr("read"),
 				},
-				Permissions: &github.InstallationPermissions{
-					PullRequests: github.Ptr("read"),
-				},
-				Repositories: []*github.Repository{
+				Repositories: []Repository{
 					{
-						Name: github.Ptr("mocked-repo-1"),
-						ID:   github.Ptr(int64(1)),
+						Name: Ptr("mocked-repo-1"),
+						ID:   Ptr(int64(1)),
 					},
 				},
 			},
@@ -217,7 +214,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				id:  1,
 				src: appSrc,
 				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&github.InstallationTokenOptions{}),
+					WithInstallationTokenOptions(&InstallationTokenOptions{}),
 					WithHTTPClient(errMockedHTTPClient),
 				},
 			},
@@ -229,9 +226,9 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				id:  1,
 				src: appSrc,
 				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&github.InstallationTokenOptions{}),
+					WithInstallationTokenOptions(&InstallationTokenOptions{}),
 					WithContext(context.Background()),
-					WithEnterpriseURLs("https://github.example.com", "https://github.example.com"),
+					WithEnterpriseURL("https://github.example.com"),
 					WithHTTPClient(mockedHTTPClient),
 				},
 			},
