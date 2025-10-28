@@ -3,7 +3,7 @@
 //
 // This package implements oauth2.TokenSource interfaces for GitHub App
 // authentication and GitHub App installation token generation. It is built
-// on top of the go-github and golang.org/x/oauth2 libraries.
+// on top of the golang.org/x/oauth2 library.
 package githubauth
 
 import (
@@ -15,7 +15,6 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
 )
 
@@ -135,7 +134,7 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 type InstallationTokenSourceOpt func(*installationTokenSource)
 
 // WithInstallationTokenOptions sets the options for the GitHub App installation token.
-func WithInstallationTokenOptions(opts *github.InstallationTokenOptions) InstallationTokenSourceOpt {
+func WithInstallationTokenOptions(opts *InstallationTokenOptions) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		i.opts = opts
 	}
@@ -149,16 +148,16 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 			Base:   client.Transport,
 		}
 
-		i.client = github.NewClient(client)
+		i.client = newGitHubClient(client)
 	}
 }
 
-// WithEnterpriseURLs sets the base URL and upload URL for GitHub Enterprise Server.
+// WithEnterpriseURL sets the base URL for GitHub Enterprise Server.
 // This option should be used after WithHTTPClient to ensure the HTTP client is properly configured.
-// If the provided URLs are invalid, the option is ignored and default GitHub URLs are used.
-func WithEnterpriseURLs(baseURL, uploadURL string) InstallationTokenSourceOpt {
+// If the provided base URL is invalid, the option is ignored and default GitHub base URL is used.
+func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
-		enterpriseClient, err := i.client.WithEnterpriseURLs(baseURL, uploadURL)
+		enterpriseClient, err := i.client.withEnterpriseURL(baseURL)
 		if err != nil {
 			return
 		}
@@ -182,8 +181,8 @@ type installationTokenSource struct {
 	id     int64
 	ctx    context.Context
 	src    oauth2.TokenSource
-	client *github.Client
-	opts   *github.InstallationTokenOptions
+	client *githubClient
+	opts   *InstallationTokenOptions
 }
 
 // NewInstallationTokenSource creates a GitHub App installation token source.
@@ -193,7 +192,7 @@ type installationTokenSource struct {
 // token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
 // prevents re-wrapping automatically.
 //
-// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
 	ctx := context.Background()
 
@@ -207,7 +206,7 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 		id:     id,
 		ctx:    ctx,
 		src:    src,
-		client: github.NewClient(httpClient),
+		client: newGitHubClient(httpClient),
 	}
 
 	for _, opt := range opts {
@@ -219,15 +218,15 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
 func (t *installationTokenSource) Token() (*oauth2.Token, error) {
-	token, _, err := t.client.Apps.CreateInstallationToken(t.ctx, t.id, t.opts)
+	token, err := t.client.createInstallationToken(t.ctx, t.id, t.opts)
 	if err != nil {
 		return nil, err
 	}
 
 	return &oauth2.Token{
-		AccessToken: token.GetToken(),
+		AccessToken: token.Token,
 		TokenType:   bearerTokenType,
-		Expiry:      token.GetExpiresAt().Time,
+		Expiry:      token.ExpiresAt,
 	}, nil
 }
 
