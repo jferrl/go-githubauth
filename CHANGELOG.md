@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] - 2025-10-28
+
+### 🚨 Breaking Changes
+
+This release removes the `github.com/google/go-github/v74` dependency and implements a lightweight internal GitHub API client. While most users will experience no breaking changes, some API adjustments have been made:
+
+#### API Changes
+
+1. **Enterprise Configuration Simplified**
+   - **Before**: `WithEnterpriseURLs(baseURL, uploadURL string)` - required both base and upload URLs
+   - **After**: `WithEnterpriseURL(baseURL string)` - single base URL parameter
+   - **Migration**: Remove the redundant upload URL parameter
+
+2. **Type Changes** (if you were using these types directly)
+   - `github.InstallationTokenOptions` → `githubauth.InstallationTokenOptions`
+   - `github.InstallationPermissions` → `githubauth.InstallationPermissions`
+   - `github.InstallationToken` → `githubauth.InstallationToken`
+   - `github.Repository` → `githubauth.Repository`
+
+### Added
+
+- **Internal GitHub API Client**: New `github.go` file with minimal GitHub API implementation
+  - Direct HTTP API calls to GitHub's REST API
+  - `InstallationTokenOptions` type for configuring installation token requests
+  - `InstallationPermissions` type with comprehensive permission structure
+  - `InstallationToken` response type from GitHub API
+  - `Repository` type for minimal repository representation
+- **Public Helper Function**: Added `Ptr[T]()` generic helper for creating pointers to any type (useful for InstallationTokenOptions)
+
+### Changed
+
+- **Removed Dependency**: Eliminated `github.com/google/go-github/v74` dependency
+- **Removed Dependency**: Eliminated `github.com/google/go-querystring` indirect dependency
+- **Simplified Enterprise Support**: Streamlined from `WithEnterpriseURLs()` to `WithEnterpriseURL()`
+- **Updated Documentation**: Package docs now reflect that the library is built only on `golang.org/x/oauth2`
+- **Binary Size Reduction**: Smaller binaries without unused go-github code
+
+### Fixed
+
+- **Documentation**: Fixed GitHub API documentation link for installation token generation
+
+### Migration Guide
+
+#### For Most Users
+
+No action required - if you only use the public `TokenSource` functions, your code will continue to work without changes.
+
+#### For Enterprise GitHub Users
+
+```go
+// Before (v1.4.x)
+installationTokenSource := githubauth.NewInstallationTokenSource(
+    installationID, 
+    appTokenSource,
+    githubauth.WithEnterpriseURLs("https://github.example.com", "https://github.example.com"),
+)
+
+// After (v1.5.0)
+installationTokenSource := githubauth.NewInstallationTokenSource(
+    installationID, 
+    appTokenSource,
+    githubauth.WithEnterpriseURL("https://github.example.com"),
+)
+```
+
+#### For Direct Type Users
+
+```go
+// Before (v1.4.x)
+import "github.com/google/go-github/v74/github"
+opts := &github.InstallationTokenOptions{
+    Repositories: []string{"repo1", "repo2"},
+    Permissions: &github.InstallationPermissions{
+        Contents: github.Ptr("read"),
+    },
+}
+
+// After (v1.5.0)
+import "github.com/jferrl/go-githubauth"
+opts := &githubauth.InstallationTokenOptions{
+    Repositories: []string{"repo1", "repo2"},
+    Permissions: &githubauth.InstallationPermissions{
+        Contents: githubauth.Ptr("read"), // Use the new Ptr() helper
+    },
+}
+```
+
+### Benefits
+
+- ✅ **Reduced Dependencies**: 2 fewer dependencies (from 3 to 2 total)
+- ✅ **Smaller Binary Size**: No unused go-github code included
+- ✅ **Better Control**: Full ownership of GitHub API integration
+- ✅ **Easier Debugging**: Simpler code path for troubleshooting
+- ✅ **Same Performance**: All token caching and performance optimizations maintained
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.4.2...v1.5.0>
+
 ## [v1.4.2] - 2025-09-19
 
 ### Changed

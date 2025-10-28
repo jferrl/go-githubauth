@@ -12,7 +12,6 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v74/github"
 	"golang.org/x/oauth2"
 )
 
@@ -154,6 +153,45 @@ func TestApplicationTokenSource_Token(t *testing.T) {
 	}
 }
 
+func TestApplicationTokenSource_Token_SigningError(t *testing.T) {
+	// Create an invalid private key that will cause signing to fail
+	invalidKey := []byte("invalid key")
+
+	// This should fail at NewApplicationTokenSource due to invalid PEM
+	_, err := NewApplicationTokenSource(int64(12345), invalidKey)
+	if err == nil {
+		t.Fatal("Expected error for invalid private key, got nil")
+	}
+}
+
+func TestWithEnterpriseURL_InvalidURL(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appSrc, err := NewApplicationTokenSource(int64(12345), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test with invalid URL - error is silently ignored in WithEnterpriseURL
+	installationTokenSource := NewInstallationTokenSource(
+		1,
+		appSrc,
+		WithEnterpriseURL("ht\ntp://invalid"),
+	)
+
+	// The error is silently ignored in WithEnterpriseURL, so this should still work
+	// but will use the default URL
+	if installationTokenSource == nil {
+		t.Error("Expected non-nil token source")
+	}
+
+	// Test that the token source is created successfully
+	// The error is silently ignored, so the source uses the default URL
+}
+
 func Test_installationTokenSource_Token(t *testing.T) {
 	now := time.Now().UTC()
 	expiration := now.Add(10 * time.Minute)
@@ -161,18 +199,16 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	mockedHTTPClient, cleanupSuccess := newMockedHTTPClient(
 		withRequestMatch(
 			postAppInstallationsAccessTokensByInstallationID,
-			github.InstallationToken{
-				Token: github.Ptr("mocked-installation-token"),
-				ExpiresAt: &github.Timestamp{
-					Time: expiration,
+			InstallationToken{
+				Token:     "mocked-installation-token",
+				ExpiresAt: expiration,
+				Permissions: &InstallationPermissions{
+					PullRequests: Ptr("read"),
 				},
-				Permissions: &github.InstallationPermissions{
-					PullRequests: github.Ptr("read"),
-				},
-				Repositories: []*github.Repository{
+				Repositories: []Repository{
 					{
-						Name: github.Ptr("mocked-repo-1"),
-						ID:   github.Ptr(int64(1)),
+						Name: Ptr("mocked-repo-1"),
+						ID:   Ptr(int64(1)),
 					},
 				},
 			},
@@ -217,7 +253,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				id:  1,
 				src: appSrc,
 				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&github.InstallationTokenOptions{}),
+					WithInstallationTokenOptions(&InstallationTokenOptions{}),
 					WithHTTPClient(errMockedHTTPClient),
 				},
 			},
@@ -229,9 +265,9 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				id:  1,
 				src: appSrc,
 				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&github.InstallationTokenOptions{}),
+					WithInstallationTokenOptions(&InstallationTokenOptions{}),
 					WithContext(context.Background()),
-					WithEnterpriseURLs("https://github.example.com", "https://github.example.com"),
+					WithEnterpriseURL("https://github.example.com"),
 					WithHTTPClient(mockedHTTPClient),
 				},
 			},

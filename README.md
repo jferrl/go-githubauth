@@ -8,7 +8,7 @@
 
 `go-githubauth` is a Go package that provides utilities for GitHub authentication, including generating and using GitHub App tokens, installation tokens, and personal access tokens.
 
-**v1.4.x** introduces personal access token support and significant performance optimizations with intelligent token caching and high-performance HTTP clients.
+**v1.5.0** removes the `go-github` dependency, implementing a lightweight internal GitHub API client. This reduces external dependencies while maintaining full compatibility with the OAuth2 token source interface.
 
 ---
 
@@ -26,8 +26,9 @@
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
 
-### v1.4.0 Features
+### v1.5.0 Features
 
+- **📦 Zero External Dependencies**: Removed `go-github` dependency - lightweight internal implementation
 - **🔐 Personal Access Token Support**: Native support for both classic and fine-grained personal access tokens
 - **⚡ Token Caching**: Dual-layer caching system for optimal performance
   - JWT tokens cached until expiration (up to 10 minutes)  
@@ -35,6 +36,7 @@
 - **🚀 Pooled HTTP Client**: Production-ready HTTP client with connection pooling
 - **📈 Performance Optimizations**: Up to 99% reduction in unnecessary GitHub API calls
 - **🏗️ Production Ready**: Optimized for high-throughput and enterprise applications
+- **🌐 Simplified Enterprise Support**: Streamlined configuration with single base URL parameter
 
 ### Core Capabilities
 
@@ -48,7 +50,9 @@
 
 ### Requirements
 
+- Go 1.21 or higher (for generics support)
 - This package is designed to be used with the `golang.org/x/oauth2` package
+- No external GitHub SDK dependencies required
 
 ## Installation
 
@@ -60,7 +64,9 @@ go get -u github.com/jferrl/go-githubauth
 
 ## Usage
 
-### Usage with [go-github](https://github.com/google/go-github) and [oauth2](golang.org/x/oauth2)
+### Usage with [oauth2](golang.org/x/oauth2)
+
+You can use this package standalone with any HTTP client, or integrate it with the [go-github](https://github.com/google/go-github) SDK if you need additional GitHub API functionality.
 
 #### Client ID (Recommended)
 
@@ -73,7 +79,7 @@ import (
  "os"
  "strconv"
 
- "github.com/google/go-github/v74/github"
+ "github.com/google/go-github/v76/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -117,7 +123,7 @@ import (
  "os"
  "strconv"
 
- "github.com/google/go-github/v74/github"
+ "github.com/google/go-github/v76/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -274,7 +280,48 @@ func main() {
 
 GitHub Personal Access Tokens provide direct authentication for users and organizations. This package supports both classic personal access tokens and fine-grained personal access tokens.
 
-#### Using Personal Access Tokens with [go-github](https://github.com/google/go-github)
+#### Using Personal Access Tokens
+
+##### With oauth2 Client (Standalone)
+
+```go
+package main
+
+import (
+ "context"
+ "fmt"
+ "io"
+ "net/http"
+ "os"
+
+ "github.com/jferrl/go-githubauth"
+ "golang.org/x/oauth2"
+)
+
+func main() {
+ // Personal access token from environment variable
+ token := os.Getenv("GITHUB_TOKEN") // e.g., "ghp_..." or "github_pat_..."
+
+ // Create token source
+ tokenSource := githubauth.NewPersonalAccessTokenSource(token)
+
+ // Create HTTP client with OAuth2 transport
+ httpClient := oauth2.NewClient(context.Background(), tokenSource)
+
+ // Use the HTTP client for GitHub API calls
+ resp, err := httpClient.Get("https://api.github.com/user")
+ if err != nil {
+  fmt.Println("Error getting user:", err)
+  return
+ }
+ defer resp.Body.Close()
+
+ body, _ := io.ReadAll(resp.Body)
+ fmt.Printf("User info: %s\n", body)
+}
+```
+
+##### With go-github SDK (Optional)
 
 ```go
 package main
@@ -284,7 +331,7 @@ import (
  "fmt"
  "os"
 
- "github.com/google/go-github/v74/github"
+ "github.com/google/go-github/v76/github"
  "github.com/jferrl/go-githubauth"
  "golang.org/x/oauth2"
 )
@@ -316,7 +363,7 @@ func main() {
 1. **Classic Personal Access Token**: Visit [GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)](https://github.com/settings/tokens)
 2. **Fine-grained Personal Access Token**: Visit [GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
 
-** 🔐 Security Note **: Store your personal access tokens securely and never commit them to version control. Use environment variables or secure credential management systems.
+**🔐 Security Note**: Store your personal access tokens securely and never commit them to version control. Use environment variables or secure credential management systems.
 
 ## Contributing
 
