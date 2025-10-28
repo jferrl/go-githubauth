@@ -49,9 +49,11 @@ This release removes the `github.com/google/go-github/v74` dependency and implem
 ### Migration Guide
 
 #### For Most Users
+
 No action required - if you only use the public `TokenSource` functions, your code will continue to work without changes.
 
 #### For Enterprise GitHub Users
+
 ```go
 // Before (v1.4.x)
 installationTokenSource := githubauth.NewInstallationTokenSource(
@@ -69,6 +71,7 @@ installationTokenSource := githubauth.NewInstallationTokenSource(
 ```
 
 #### For Direct Type Users
+
 ```go
 // Before (v1.4.x)
 import "github.com/google/go-github/v74/github"
