@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -99,6 +100,16 @@ func (c *githubClient) withEnterpriseURL(baseURL string) (*githubClient, error) 
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+	}
+
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
+	}
+
+	if !strings.HasSuffix(base.Path, "/api/v3/") &&
+		!strings.HasPrefix(base.Host, "api.") &&
+		!strings.Contains(base.Host, ".api.") {
+		base.Path += "api/v3/"
 	}
 
 	c.baseURL = base

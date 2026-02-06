@@ -12,33 +12,48 @@ import (
 
 func Test_githubClient_withEnterpriseURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		baseURL string
-		wantErr bool
+		name            string
+		baseURL         string
+		expectedBaseURL interface{}
 	}{
 		{
-			name:    "valid URL",
-			baseURL: "https://github.example.com",
-			wantErr: false,
+			name:            "valid URL with subdomain",
+			baseURL:         "https://api.github.example.com",
+			expectedBaseURL: "https://api.github.example.com/",
 		},
 		{
-			name:    "invalid URL with control characters",
-			baseURL: "ht\ntp://invalid",
-			wantErr: true,
+			name:            "valid URL with path",
+			baseURL:         "https://github.example.com/api/v3",
+			expectedBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:    "URL with spaces",
-			baseURL: "http://invalid url with spaces",
-			wantErr: true,
+			name:            "valid URL without path",
+			baseURL:         "https://github.example.com",
+			expectedBaseURL: "https://github.example.com/api/v3/",
+		},
+		{
+			name:            "invalid URL with control characters",
+			baseURL:         "ht\ntp://invalid",
+			expectedBaseURL: nil,
+		},
+		{
+			name:            "URL with spaces",
+			baseURL:         "http://invalid url with spaces",
+			expectedBaseURL: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newGitHubClient(&http.Client{})
-			_, err := client.withEnterpriseURL(tt.baseURL)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("withEnterpriseURL() error = %v, wantErr %v", err, tt.wantErr)
+			githubClient, err := client.withEnterpriseURL(tt.baseURL)
+
+			if err != nil {
+				if tt.expectedBaseURL != nil {
+					t.Errorf("withEnterpriseURL(%v) error = %v", tt.baseURL, err)
+				}
+			} else if githubClient.baseURL.String() != tt.expectedBaseURL {
+				t.Errorf("withEnterpriseURL(%v) expected = %v, received = %v", tt.baseURL, tt.expectedBaseURL, githubClient.baseURL)
 			}
 		})
 	}
