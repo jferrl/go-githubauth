@@ -14,32 +14,68 @@ func Test_githubClient_withEnterpriseURL(t *testing.T) {
 	tests := []struct {
 		name            string
 		baseURL         string
-		expectedBaseURL interface{}
+		wantErr         bool
+		expectedBaseURL string
 	}{
 		{
-			name:            "valid URL with subdomain",
+			name:            "valid URL with first subdomain",
 			baseURL:         "https://api.github.example.com",
+			wantErr:         false,
 			expectedBaseURL: "https://api.github.example.com/",
+		},
+		{
+			name:            "valid URL with first subdomain and trailing slash",
+			baseURL:         "https://api.github.example.com/",
+			wantErr:         false,
+			expectedBaseURL: "https://api.github.example.com/",
+		},
+		{
+			name:            "valid URL with second subdomain",
+			baseURL:         "https://ghes.api.example.com",
+			wantErr:         false,
+			expectedBaseURL: "https://ghes.api.example.com/",
+		},
+		{
+			name:            "valid URL with second subdomain and trailing slash",
+			baseURL:         "https://ghes.api.example.com/",
+			wantErr:         false,
+			expectedBaseURL: "https://ghes.api.example.com/",
 		},
 		{
 			name:            "valid URL with path",
 			baseURL:         "https://github.example.com/api/v3",
+			wantErr:         false,
+			expectedBaseURL: "https://github.example.com/api/v3/",
+		},
+		{
+			name:            "valid URL with path and trailing slash",
+			baseURL:         "https://github.example.com/api/v3/",
+			wantErr:         false,
 			expectedBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
 			name:            "valid URL without path",
 			baseURL:         "https://github.example.com",
+			wantErr:         false,
+			expectedBaseURL: "https://github.example.com/api/v3/",
+		},
+		{
+			name:            "valid URL without path but with trailing slash",
+			baseURL:         "https://github.example.com/",
+			wantErr:         false,
 			expectedBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
 			name:            "invalid URL with control characters",
 			baseURL:         "ht\ntp://invalid",
-			expectedBaseURL: nil,
+			wantErr:         true,
+			expectedBaseURL: "",
 		},
 		{
 			name:            "URL with spaces",
 			baseURL:         "http://invalid url with spaces",
-			expectedBaseURL: nil,
+			wantErr:         true,
+			expectedBaseURL: "",
 		},
 	}
 
@@ -48,11 +84,11 @@ func Test_githubClient_withEnterpriseURL(t *testing.T) {
 			client := newGitHubClient(&http.Client{})
 			githubClient, err := client.withEnterpriseURL(tt.baseURL)
 
-			if err != nil {
-				if tt.expectedBaseURL != nil {
-					t.Errorf("withEnterpriseURL(%v) error = %v", tt.baseURL, err)
-				}
-			} else if githubClient.baseURL.String() != tt.expectedBaseURL {
+			if (err != nil) != tt.wantErr {
+				t.Errorf("withEnterpriseURL(%v) error = %v", tt.baseURL, err)
+			}
+
+			if err == nil && githubClient.baseURL.String() != tt.expectedBaseURL {
 				t.Errorf("withEnterpriseURL(%v) expected = %v, received = %v", tt.baseURL, tt.expectedBaseURL, githubClient.baseURL)
 			}
 		})
