@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.1] - 2026-02-09
+
+### Fixed
+
+- **Enterprise URL Handling**: Fixed regression in GitHub Enterprise URL handling (#41)
+
+### Tests
+
+- Tightened test conditions and added more tests for `WithEnterpriseURL`
+
+### Dependencies
+
+- Bumped `github.com/golang-jwt/jwt/v5` from 5.3.0 to 5.3.1 (#39)
+- Bumped `golang.org/x/oauth2` from 0.32.0 to 0.34.0 (#34, #36)
+- Bumped `actions/checkout` from 5 to 6 (#35)
+- Bumped `actions/cache` from 4 to 5 (#37)
+- Bumped `golangci/golangci-lint-action` from 8 to 9 (#33)
+- Bumped `styfle/cancel-workflow-action` from 0.12.1 to 0.13.0 (#38)
+
+**Contributors**: @luna-veil-8080
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.5.0...v1.5.1>
+
 ## [v1.5.0] - 2025-10-28
 
 ### 🚨 Breaking Changes
