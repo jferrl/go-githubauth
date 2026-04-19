@@ -43,6 +43,7 @@
 - Generate GitHub Application JWT [Generating a jwt for a github app](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 - Obtain GitHub App installation tokens [Authenticating as a GitHub App](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-token-generated-by-an-app)
 - Authenticate with Personal Access Tokens (classic and fine-grained) [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- Verify incoming webhook deliveries with constant-time HMAC-SHA256 checks [Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - RS256-signed JWTs with proper clock drift protection
 - Support for both legacy App IDs and modern Client IDs (recommended by GitHub)
 - Intelligent token caching with automatic refresh for optimal performance
@@ -364,6 +365,85 @@ func main() {
 2. **Fine-grained Personal Access Token**: Visit [GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
 
 **🔐 Security Note**: Store your personal access tokens securely and never commit them to version control. Use environment variables or secure credential management systems.
+
+### Webhook Signature Verification
+
+GitHub signs every webhook delivery with HMAC-SHA256 over the raw request body, using the secret configured on the webhook. The `webhook` subpackage verifies the `X-Hub-Signature-256` header in constant time and ships an `http.Handler` middleware that restores the body for downstream handlers.
+
+See [Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries).
+
+#### With the middleware (recommended)
+
+```go
+package main
+
+import (
+ "encoding/json"
+ "log"
+ "net/http"
+ "os"
+
+ "github.com/jferrl/go-githubauth/webhook"
+)
+
+func main() {
+ secret := []byte(os.Getenv("GITHUB_WEBHOOK_SECRET"))
+
+ mux := http.NewServeMux()
+ mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
+  event := r.Header.Get(webhook.EventHeader)
+  delivery := r.Header.Get(webhook.DeliveryHeader)
+
+  var payload map[string]any
+  if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+   http.Error(w, "bad payload", http.StatusBadRequest)
+   return
+  }
+
+  log.Printf("received %s delivery=%s", event, delivery)
+  w.WriteHeader(http.StatusNoContent)
+ })
+
+ // Middleware verifies the signature, restores r.Body, then invokes mux.
+ // Failed verifications short-circuit with 401; oversized bodies return 413.
+ log.Fatal(http.ListenAndServe(":8080", webhook.Middleware(secret)(mux)))
+}
+```
+
+Middleware options:
+
+- `webhook.WithMaxPayloadSize(n int64)` — override the 25 MiB default cap (GitHub's documented delivery limit).
+- `webhook.WithErrorHandler(fn)` — customize the response for verification failures (e.g., structured logging, alternate status codes).
+
+#### Direct verification (queues, Lambda, custom transports)
+
+Use `webhook.Verify` when the request does not arrive through `net/http`, for example in AWS Lambda, Cloud Run event triggers, or after consuming from a message queue.
+
+```go
+import (
+ "errors"
+
+ "github.com/jferrl/go-githubauth/webhook"
+)
+
+func handle(secret, body []byte, signature string) error {
+ if err := webhook.Verify(secret, body, signature); err != nil {
+  switch {
+  case errors.Is(err, webhook.ErrMissingSignature):
+   // header absent
+  case errors.Is(err, webhook.ErrInvalidSignatureFormat):
+   // malformed header
+  case errors.Is(err, webhook.ErrSignatureMismatch):
+   // wrong secret or tampered body
+  }
+  return err
+ }
+ // body is trusted from here
+ return nil
+}
+```
+
+**🔐 Security Note**: Store the webhook secret with the same care as a credential. A leaked secret lets an attacker forge deliveries to your endpoint.
 
 ## Contributing
 
