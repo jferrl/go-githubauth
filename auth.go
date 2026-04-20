@@ -8,7 +8,11 @@ package githubauth
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strconv"
@@ -34,10 +38,12 @@ type Identifier interface {
 
 // applicationTokenSource generates GitHub App JWTs for authentication.
 // JWTs are signed with RS256 and include iat, exp, and iss claims per GitHub's requirements.
+// Signing is delegated to a crypto.Signer so the private key may live in memory
+// (*rsa.PrivateKey), in a KMS/HSM/Vault, or behind ssh-agent.
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 type applicationTokenSource struct {
 	issuer     string // App ID (numeric) or Client ID (alphanumeric)
-	privateKey *rsa.PrivateKey
+	signer     crypto.Signer
 	expiration time.Duration
 }
 
@@ -56,34 +62,25 @@ func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 	}
 }
 
-// NewApplicationTokenSource creates a GitHub App JWT token source.
+// NewApplicationTokenSource creates a GitHub App JWT token source from a
+// PEM-encoded RSA private key.
 // Accepts either int64 App ID or string Client ID. GitHub recommends Client IDs for new apps.
-// Private key must be in PEM format. Generated JWTs are RS256-signed with iat, exp, and iss claims.
+// Generated JWTs are RS256-signed with iat, exp, and iss claims.
 // JWTs expire in max 10 minutes and include clock drift protection (iat set 60s in past).
 //
 // The returned token source is wrapped in oauth2.ReuseTokenSource to prevent unnecessary
 // token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
 // prevents re-wrapping automatically.
 //
+// For KMS, HSM, Vault, or ssh-agent backed signing, use
+// NewApplicationTokenSourceFromSigner instead — the private key never leaves
+// its secure boundary.
+//
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 func NewApplicationTokenSource[T Identifier](id T, privateKey []byte, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
-	var issuer string
-	var isZeroValue bool
-
-	// Convert the identifier to string and check for zero values
-	switch v := any(id).(type) {
-	case int64:
-		isZeroValue = v == 0
-		issuer = strconv.FormatInt(v, 10)
-	case string:
-		isZeroValue = v == ""
-		issuer = v
-	default:
-		return nil, errors.New("unsupported identifier type")
-	}
-
-	if isZeroValue {
-		return nil, errors.New("application identifier is required")
+	issuer, err := resolveIssuer(id)
+	if err != nil {
+		return nil, err
 	}
 
 	privKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
@@ -91,21 +88,68 @@ func NewApplicationTokenSource[T Identifier](id T, privateKey []byte, opts ...Ap
 		return nil, err
 	}
 
-	t := &applicationTokenSource{
-		issuer:     issuer,
-		privateKey: privKey,
-		expiration: DefaultApplicationTokenExpiration,
+	return newApplicationTokenSource(issuer, privKey, opts...), nil
+}
+
+// NewApplicationTokenSourceFromSigner creates a GitHub App JWT token source
+// backed by an external crypto.Signer. Any RSA-backed signer works: AWS KMS,
+// GCP KMS, Azure Key Vault, HashiCorp Vault Transit, PKCS#11 HSMs, or
+// ssh-agent. The private key never touches process memory.
+//
+// The signer's public key must be RSA — GitHub requires RS256 (RSASSA-PKCS1-v1_5
+// with SHA-256, per RFC 7518 §3.3). The signer must return signatures in that
+// form when called with crypto.SHA256; every stdlib-compatible RSA signer does.
+//
+// See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+func NewApplicationTokenSourceFromSigner[T Identifier](id T, signer crypto.Signer, opts ...ApplicationTokenOpt) (oauth2.TokenSource, error) {
+	issuer, err := resolveIssuer(id)
+	if err != nil {
+		return nil, err
+	}
+	if signer == nil {
+		return nil, errors.New("signer is required")
+	}
+	if _, ok := signer.Public().(*rsa.PublicKey); !ok {
+		return nil, errors.New("signer public key must be RSA (GitHub requires RS256)")
 	}
 
+	return newApplicationTokenSource(issuer, signer, opts...), nil
+}
+
+// resolveIssuer converts a generic App ID / Client ID to its string form
+// and rejects zero values.
+func resolveIssuer[T Identifier](id T) (string, error) {
+	switch v := any(id).(type) {
+	case int64:
+		if v == 0 {
+			return "", errors.New("application identifier is required")
+		}
+		return strconv.FormatInt(v, 10), nil
+	case string:
+		if v == "" {
+			return "", errors.New("application identifier is required")
+		}
+		return v, nil
+	default:
+		return "", errors.New("unsupported identifier type")
+	}
+}
+
+func newApplicationTokenSource(issuer string, signer crypto.Signer, opts ...ApplicationTokenOpt) oauth2.TokenSource {
+	t := &applicationTokenSource{
+		issuer:     issuer,
+		signer:     signer,
+		expiration: DefaultApplicationTokenExpiration,
+	}
 	for _, opt := range opts {
 		opt(t)
 	}
-
-	return oauth2.ReuseTokenSource(nil, t), nil
+	return oauth2.ReuseTokenSource(nil, t)
 }
 
 // Token generates a GitHub App JWT with required claims: iat, exp, iss, and alg.
 // The iat claim is set 60 seconds in the past to account for clock drift.
+// Signing is routed through the configured crypto.Signer.
 // Generated JWTs can be used with "Authorization: Bearer" header for GitHub API requests.
 func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	// To protect against clock drift, set the issuance time 60 seconds in the past.
@@ -118,13 +162,19 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 		Issuer:    t.issuer,
 	})
 
-	accessToken, err := token.SignedString(t.privateKey)
+	signingString, err := token.SigningString()
+	if err != nil {
+		return nil, err
+	}
+
+	digest := sha256.Sum256([]byte(signingString))
+	sig, err := t.signer.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
 		return nil, err
 	}
 
 	return &oauth2.Token{
-		AccessToken: accessToken,
+		AccessToken: signingString + "." + base64.RawURLEncoding.EncodeToString(sig),
 		TokenType:   bearerTokenType,
 		Expiry:      expiresAt,
 	}, nil

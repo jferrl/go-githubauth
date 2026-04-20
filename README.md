@@ -44,6 +44,7 @@
 - Obtain GitHub App installation tokens [Authenticating as a GitHub App](https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api?apiVersion=2022-11-28#authenticating-with-a-token-generated-by-an-app)
 - Authenticate with Personal Access Tokens (classic and fine-grained) [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
 - Verify incoming webhook deliveries with constant-time HMAC-SHA256 checks [Validating webhook deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+- Sign JWTs with external `crypto.Signer` backends (AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault Transit, PKCS#11 HSMs, ssh-agent) so the private key never touches process memory
 - RS256-signed JWTs with proper clock drift protection
 - Support for both legacy App IDs and modern Client IDs (recommended by GitHub)
 - Intelligent token caching with automatic refresh for optimal performance
@@ -51,7 +52,7 @@
 
 ### Requirements
 
-- Go 1.21 or higher (for generics support)
+- Go 1.25 or higher (required by `golang.org/x/oauth2`)
 - This package is designed to be used with the `golang.org/x/oauth2` package
 - No external GitHub SDK dependencies required
 
@@ -276,6 +277,58 @@ func main() {
  fmt.Println("Generated installation token:", token.AccessToken)
 }
 ```
+
+### Signing with External Key Stores (AWS KMS, GCP KMS, Vault, HSM)
+
+For regulated or high-security environments, the private key should never leave its secure boundary. `NewApplicationTokenSourceFromSigner` accepts any `crypto.Signer` whose public key is RSA — AWS KMS, Google Cloud KMS, Azure Key Vault, HashiCorp Vault Transit, PKCS#11 HSMs, and ssh-agent all fit.
+
+The same `crypto.Signer` call (`Sign(rand, digest, crypto.SHA256)`) maps to each backend's native RSASSA-PKCS1-v1_5 SHA-256 signing operation. GitHub requires RS256.
+
+```go
+package main
+
+import (
+ "context"
+ "fmt"
+ "os"
+
+ "github.com/jferrl/go-githubauth"
+)
+
+func main() {
+ clientID := os.Getenv("GITHUB_APP_CLIENT_ID")
+
+ // signer is any crypto.Signer backed by an RSA key: *rsa.PrivateKey,
+ // an AWS KMS wrapper, a GCP KMS wrapper, a Vault Transit wrapper,
+ // a PKCS#11 HSM library like github.com/ThalesGroup/crypto11, or
+ // an ssh-agent adapter. The private key never touches process memory.
+ signer := newKMSBackedSigner(context.Background(), os.Getenv("KMS_KEY_ARN"))
+
+ appTokenSource, err := githubauth.NewApplicationTokenSourceFromSigner(clientID, signer)
+ if err != nil {
+  fmt.Println("Error creating application token source:", err)
+  return
+ }
+
+ token, err := appTokenSource.Token()
+ if err != nil {
+  fmt.Println("Error generating JWT:", err)
+  return
+ }
+
+ fmt.Println("Generated JWT token:", token.AccessToken)
+}
+```
+
+Backend references (all support `RSASSA_PKCS1_V1_5_SHA_256` on RSA keys ≥ 2048):
+
+- **AWS KMS** — [Sign API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html), [`service/kms`](https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/service/kms). Community adapters: [form3tech-oss/jwt-go-aws-kms](https://github.com/form3tech-oss/jwt-go-aws-kms), [salrashid123/signer](https://github.com/salrashid123/signer)
+- **Google Cloud KMS** — [Create and validate signatures](https://cloud.google.com/kms/docs/create-validate-signatures), [`cloud.google.com/go/kms/apiv1`](https://pkg.go.dev/cloud.google.com/go/kms/apiv1). Adapter: [salrashid123/signer/kms](https://github.com/salrashid123/signer/tree/master/kms)
+- **HashiCorp Vault Transit** — [Sign data](https://developer.hashicorp.com/vault/api-docs/secret/transit#sign-data). Adapter: [salrashid123/signer/vault](https://github.com/salrashid123/signer/tree/master/vault)
+- **Azure Key Vault** — [Sign API](https://learn.microsoft.com/en-us/rest/api/keyvault/keys/sign) with `alg=RS256`
+- **PKCS#11 / HSM** — [ThalesGroup/crypto11](https://github.com/ThalesGroup/crypto11) implements `crypto.Signer` directly, no adapter needed
+
+**🔐 Security Note**: The signer's public key must be RSA. The constructor rejects non-RSA signers (ECDSA, ed25519) at construction time since GitHub requires RS256.
 
 ### Personal Access Token Authentication
 
