@@ -306,6 +306,24 @@ func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 	}
 }
 
+// WithRetryOnThrottle enables or disables a single automatic retry when
+// GitHub returns a throttled response (HTTP 429, or 403 with rate-limit
+// headers) for the installation token POST. Enabled by default.
+//
+// On a throttled response the client sleeps the duration hinted by
+// Retry-After or x-ratelimit-reset (capped at 60s, honoring ctx cancellation)
+// and retries once. Subsequent failures bubble up unchanged. On a terminal
+// throttle the returned error wraps ErrRateLimited so callers can branch with
+// errors.Is.
+//
+// Disable this when the caller implements its own backoff or when deterministic
+// latency matters more than transient rate-limit resilience.
+func WithRetryOnThrottle(enabled bool) InstallationTokenSourceOpt {
+	return func(i *installationTokenSource) {
+		i.client.retryOnThrottle = enabled
+	}
+}
+
 // WithInstallationExpirySkew overrides the default early-refresh window
 // (DefaultExpirySkew, 30s) applied to the installation token cache returned
 // by NewInstallationTokenSource. Installation tokens live 1 hour, so the 30s
