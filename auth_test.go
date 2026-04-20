@@ -12,10 +12,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -703,4 +705,371 @@ func generatePrivateKey() ([]byte, error) {
 	}
 
 	return pem.EncodeToMemory(privateKeyPEM), nil
+}
+
+// countingSource is a test oauth2.TokenSource that counts Token() calls,
+// mints tokens via a user-supplied factory, and can simulate slow upstreams.
+type countingSource struct {
+	mu      sync.Mutex
+	calls   int
+	delay   time.Duration
+	mkToken func(call int) *oauth2.Token
+	err     error
+}
+
+func (c *countingSource) Token() (*oauth2.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	delay, mk, err := c.delay, c.mkToken, c.err
+	c.mu.Unlock()
+
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return mk(call), nil
+}
+
+func (c *countingSource) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// newShortLivedSource returns a source that mints tokens with a fixed
+// remaining lifetime measured from the moment of minting.
+func newShortLivedSource(validFor time.Duration) *countingSource {
+	return &countingSource{
+		mkToken: func(call int) *oauth2.Token {
+			return &oauth2.Token{
+				AccessToken: fmt.Sprintf("token-%d", call),
+				TokenType:   "Bearer",
+				Expiry:      time.Now().Add(validFor),
+			}
+		},
+	}
+}
+
+func TestReuseTokenSourceWithSkew(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{
+			// Token valid for 1s, skew=500ms. First Token() caches; after 600ms
+			// the cached token is within the skew window and the next call
+			// must refresh.
+			name: "refreshes within skew window",
+			run: func(t *testing.T) {
+				src := newShortLivedSource(1 * time.Second)
+				ts := ReuseTokenSourceWithSkew(nil, src, 500*time.Millisecond)
+
+				first, err := ts.Token()
+				if err != nil {
+					t.Fatalf("first Token(): %v", err)
+				}
+				if got := src.callCount(); got != 1 {
+					t.Fatalf("upstream calls after first Token() = %d, want 1", got)
+				}
+
+				// Cached call while still outside the skew window: no refresh.
+				cached, err := ts.Token()
+				if err != nil {
+					t.Fatalf("cached Token(): %v", err)
+				}
+				if got := src.callCount(); got != 1 {
+					t.Fatalf("upstream calls after cached Token() = %d, want 1", got)
+				}
+				if cached.AccessToken != first.AccessToken {
+					t.Errorf("cached token = %q, want %q", cached.AccessToken, first.AccessToken)
+				}
+
+				// Enter the skew window (600ms elapsed, 400ms to exp ≤ 500ms skew).
+				time.Sleep(600 * time.Millisecond)
+
+				refreshed, err := ts.Token()
+				if err != nil {
+					t.Fatalf("refresh Token(): %v", err)
+				}
+				if got := src.callCount(); got != 2 {
+					t.Errorf("upstream calls after refresh = %d, want 2", got)
+				}
+				if refreshed.AccessToken == first.AccessToken {
+					t.Errorf("refreshed token = %q, want a new token", refreshed.AccessToken)
+				}
+			},
+		},
+		{
+			// Skew 2s, tokens valid for 1s. Every call lands inside the skew
+			// window, so the cache never hits.
+			name: "skew exceeds validity always refreshes",
+			run: func(t *testing.T) {
+				src := newShortLivedSource(1 * time.Second)
+				ts := ReuseTokenSourceWithSkew(nil, src, 2*time.Second)
+
+				const iterations = 5
+				var last string
+				for i := range iterations {
+					tok, err := ts.Token()
+					if err != nil {
+						t.Fatalf("Token() #%d: %v", i, err)
+					}
+					if tok.AccessToken == last {
+						t.Errorf("Token() #%d returned cached %q, want refresh", i, tok.AccessToken)
+					}
+					last = tok.AccessToken
+				}
+				if got := src.callCount(); got != iterations {
+					t.Errorf("upstream calls = %d, want %d", got, iterations)
+				}
+			},
+		},
+		{
+			// Regression: with skew<=0 the wrapper must match
+			// oauth2.ReuseTokenSource exactly. We run identical scenarios
+			// through both implementations and assert the same upstream call
+			// counts and the same AccessTokens at every step.
+			name: "zero skew matches ReuseTokenSource",
+			run: func(t *testing.T) {
+				scenarios := []struct {
+					name   string
+					seed   *oauth2.Token
+					makeFn func(call int) *oauth2.Token
+					calls  int
+				}{
+					{
+						name: "nil seed, long-lived tokens, repeated calls cache",
+						seed: nil,
+						makeFn: func(call int) *oauth2.Token {
+							return &oauth2.Token{
+								AccessToken: fmt.Sprintf("long-%d", call),
+								TokenType:   "Bearer",
+								Expiry:      time.Now().Add(1 * time.Hour),
+							}
+						},
+						calls: 5,
+					},
+					{
+						name: "pre-seeded long-lived token is reused",
+						seed: &oauth2.Token{
+							AccessToken: "seed",
+							TokenType:   "Bearer",
+							Expiry:      time.Now().Add(1 * time.Hour),
+						},
+						makeFn: func(call int) *oauth2.Token {
+							return &oauth2.Token{
+								AccessToken: fmt.Sprintf("fresh-%d", call),
+								TokenType:   "Bearer",
+								Expiry:      time.Now().Add(1 * time.Hour),
+							}
+						},
+						calls: 3,
+					},
+				}
+				for _, s := range scenarios {
+					t.Run(s.name, func(t *testing.T) {
+						skewSrc := &countingSource{mkToken: s.makeFn}
+						plainSrc := &countingSource{mkToken: s.makeFn}
+
+						skewTS := ReuseTokenSourceWithSkew(s.seed, skewSrc, 0)
+						plainTS := oauth2.ReuseTokenSource(s.seed, plainSrc)
+
+						for i := 0; i < s.calls; i++ {
+							skewTok, skewErr := skewTS.Token()
+							plainTok, plainErr := plainTS.Token()
+
+							if (skewErr == nil) != (plainErr == nil) {
+								t.Fatalf("call %d error mismatch: skew=%v plain=%v", i, skewErr, plainErr)
+							}
+							if skewErr != nil {
+								continue
+							}
+							if skewTok.AccessToken != plainTok.AccessToken {
+								t.Errorf("call %d token mismatch: skew=%q plain=%q", i, skewTok.AccessToken, plainTok.AccessToken)
+							}
+						}
+						if skewSrc.callCount() != plainSrc.callCount() {
+							t.Errorf("upstream call counts differ: skew=%d plain=%d", skewSrc.callCount(), plainSrc.callCount())
+						}
+					})
+				}
+			},
+		},
+		{
+			// 100 goroutines fire Token() against a slow upstream that mints a
+			// long-lived token. The mutex must funnel them so only the first
+			// reaches upstream; the rest return the cached value.
+			name: "concurrent Token calls collapse to one upstream fetch",
+			run: func(t *testing.T) {
+				src := &countingSource{
+					delay: 50 * time.Millisecond,
+					mkToken: func(call int) *oauth2.Token {
+						return &oauth2.Token{
+							AccessToken: fmt.Sprintf("token-%d", call),
+							TokenType:   "Bearer",
+							Expiry:      time.Now().Add(1 * time.Hour),
+						}
+					},
+				}
+				ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
+
+				const goroutines = 100
+				var (
+					wg     sync.WaitGroup
+					mu     sync.Mutex
+					tokens = make(map[string]int, goroutines)
+					errs   []error
+				)
+				wg.Add(goroutines)
+				start := make(chan struct{})
+				for range goroutines {
+					go func() {
+						defer wg.Done()
+						<-start
+						tok, err := ts.Token()
+						mu.Lock()
+						defer mu.Unlock()
+						if err != nil {
+							errs = append(errs, err)
+							return
+						}
+						tokens[tok.AccessToken]++
+					}()
+				}
+				close(start)
+				wg.Wait()
+
+				if len(errs) != 0 {
+					t.Fatalf("Token() errors: %v", errs)
+				}
+				if got := src.callCount(); got != 1 {
+					t.Errorf("upstream calls = %d, want 1", got)
+				}
+				if len(tokens) != 1 {
+					t.Errorf("distinct tokens = %d, want 1 (%v)", len(tokens), tokens)
+				}
+				if tokens["token-1"] != goroutines {
+					t.Errorf("goroutines that got token-1 = %d, want %d", tokens["token-1"], goroutines)
+				}
+			},
+		},
+		{
+			// A valid seed token passed into the wrapper must be served
+			// without touching upstream. This is the hot-start path: callers
+			// rehydrating a cached token from disk or config should not incur
+			// an extra round trip.
+			name: "valid seed token served without upstream call",
+			run: func(t *testing.T) {
+				seed := &oauth2.Token{
+					AccessToken: "seeded",
+					TokenType:   "Bearer",
+					Expiry:      time.Now().Add(1 * time.Hour),
+				}
+				src := &countingSource{
+					mkToken: func(call int) *oauth2.Token {
+						return &oauth2.Token{
+							AccessToken: fmt.Sprintf("fresh-%d", call),
+							TokenType:   "Bearer",
+							Expiry:      time.Now().Add(1 * time.Hour),
+						}
+					},
+				}
+				ts := ReuseTokenSourceWithSkew(seed, src, 30*time.Second)
+
+				tok, err := ts.Token()
+				if err != nil {
+					t.Fatalf("Token(): %v", err)
+				}
+				if tok.AccessToken != "seeded" {
+					t.Errorf("AccessToken = %q, want %q (seed)", tok.AccessToken, "seeded")
+				}
+				if got := src.callCount(); got != 0 {
+					t.Errorf("upstream calls = %d, want 0 (seed should short-circuit)", got)
+				}
+			},
+		},
+		{
+			// Upstream errors must surface to the caller verbatim (wrappable
+			// with errors.Is) and must not be cached — the next call has to
+			// retry the upstream. Caching a failure would turn a transient
+			// hiccup into a permanent outage.
+			name: "upstream error is propagated and not cached",
+			run: func(t *testing.T) {
+				sentinel := errors.New("upstream unavailable")
+				src := &countingSource{
+					err:     sentinel,
+					mkToken: func(int) *oauth2.Token { return nil },
+				}
+				ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
+
+				for i := range 3 {
+					_, err := ts.Token()
+					if !errors.Is(err, sentinel) {
+						t.Errorf("call %d: err = %v, want errors.Is(%v)", i, err, sentinel)
+					}
+				}
+				if got := src.callCount(); got != 3 {
+					t.Errorf("upstream calls = %d, want 3 (errors must not be cached)", got)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.run)
+	}
+}
+
+// TestWithExpirySkew_Wiring verifies that WithExpirySkew threads through to
+// the constructor-selected wrapper: a positive skew yields our
+// *reuseTokenSourceWithSkew, a non-positive skew falls back to
+// oauth2.ReuseTokenSource. We compare by type rather than by token-body
+// equality because the JWT payload is deterministic within a single clock
+// second, which would make a caching check ambiguous.
+func TestWithExpirySkew_Wiring(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		skewOpts  []ApplicationTokenOpt
+		wantSkew  bool // true → *reuseTokenSourceWithSkew, false → delegated
+	}{
+		{
+			name:     "default skew uses wrapper",
+			skewOpts: nil,
+			wantSkew: true,
+		},
+		{
+			name:     "explicit positive skew uses wrapper",
+			skewOpts: []ApplicationTokenOpt{WithExpirySkew(5 * time.Second)},
+			wantSkew: true,
+		},
+		{
+			name:     "zero skew delegates to oauth2.ReuseTokenSource",
+			skewOpts: []ApplicationTokenOpt{WithExpirySkew(0)},
+			wantSkew: false,
+		},
+		{
+			name:     "negative skew delegates to oauth2.ReuseTokenSource",
+			skewOpts: []ApplicationTokenOpt{WithExpirySkew(-1 * time.Second)},
+			wantSkew: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, err := NewApplicationTokenSource(int64(99), privateKey, tt.skewOpts...)
+			if err != nil {
+				t.Fatalf("NewApplicationTokenSource: %v", err)
+			}
+			_, isSkew := ts.(*reuseTokenSourceWithSkew)
+			if isSkew != tt.wantSkew {
+				t.Errorf("token source is *reuseTokenSourceWithSkew = %v, want %v (type=%T)", isSkew, tt.wantSkew, ts)
+			}
+		})
+	}
 }

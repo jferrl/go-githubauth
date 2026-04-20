@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
@@ -27,9 +28,72 @@ const (
 	// The maximum allowed expiration is 10 minutes.
 	DefaultApplicationTokenExpiration = 10 * time.Minute
 
+	// DefaultExpirySkew is the default early-refresh window applied to cached
+	// tokens returned by NewApplicationTokenSource and NewInstallationTokenSource.
+	// At 30s the effective validity of a default 10-minute application JWT becomes
+	// 9m30s, which is acceptable and eliminates the common in-flight 401 caused
+	// by a request starting near exp and arriving at GitHub after exp.
+	DefaultExpirySkew = 30 * time.Second
+
 	// bearerTokenType is the token type used for OAuth2 Bearer tokens.
 	bearerTokenType = "Bearer"
 )
+
+// ReuseTokenSourceWithSkew wraps src so cached tokens are refreshed proactively,
+// skew before their expiry. oauth2.ReuseTokenSource refreshes only once exp has
+// passed (via oauth2.Token.Valid), so a request that starts at T-100ms with a
+// token expiring at T can arrive at GitHub already expired and yield a 401 the
+// caller must manually retry. This wrapper refreshes when
+// time.Until(t.Expiry) <= skew, cutting out that race.
+//
+// If skew is zero or negative the wrapper delegates to oauth2.ReuseTokenSource,
+// preserving its exact behavior. An initial non-nil t is used until it needs
+// refresh under the same rule. The returned source is safe for concurrent use;
+// concurrent Token calls that find the cache stale collapse into a single
+// upstream fetch.
+func ReuseTokenSourceWithSkew(t *oauth2.Token, src oauth2.TokenSource, skew time.Duration) oauth2.TokenSource {
+	if skew <= 0 {
+		return oauth2.ReuseTokenSource(t, src)
+	}
+	return &reuseTokenSourceWithSkew{
+		t:    t,
+		src:  src,
+		skew: skew,
+	}
+}
+
+type reuseTokenSourceWithSkew struct {
+	mu   sync.Mutex
+	t    *oauth2.Token
+	src  oauth2.TokenSource
+	skew time.Duration
+}
+
+// Token returns the cached token if it is still valid beyond the configured
+// skew, otherwise it calls the underlying source and caches the result.
+func (r *reuseTokenSourceWithSkew) Token() (*oauth2.Token, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.valid() {
+		return r.t, nil
+	}
+	t, err := r.src.Token()
+	if err != nil {
+		return nil, err
+	}
+	r.t = t
+	return t, nil
+}
+
+func (r *reuseTokenSourceWithSkew) valid() bool {
+	if r.t == nil || r.t.AccessToken == "" {
+		return false
+	}
+	if r.t.Expiry.IsZero() {
+		return true
+	}
+	return time.Until(r.t.Expiry) > r.skew
+}
 
 // Identifier constrains GitHub App identifiers to int64 (App ID) or string (Client ID).
 type Identifier interface {
@@ -45,6 +109,7 @@ type applicationTokenSource struct {
 	issuer     string // App ID (numeric) or Client ID (alphanumeric)
 	signer     crypto.Signer
 	expiration time.Duration
+	skew       time.Duration
 }
 
 // ApplicationTokenOpt is a functional option for configuring an applicationTokenSource.
@@ -62,15 +127,32 @@ func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 	}
 }
 
+// WithExpirySkew overrides the default early-refresh window (DefaultExpirySkew,
+// 30s) applied to the token cache returned by NewApplicationTokenSource. The
+// cached token is refreshed when time.Until(exp) <= d. A zero or negative value
+// disables the skew and falls back to oauth2.ReuseTokenSource behavior
+// (refresh only after exp has passed).
+//
+// Tune this when your application token expiration (see
+// WithApplicationTokenExpiration) is short: the effective validity is
+// expiration - skew, so with the default 10-minute expiration and 30s skew
+// tokens are refreshed at 9m30s.
+func WithExpirySkew(d time.Duration) ApplicationTokenOpt {
+	return func(a *applicationTokenSource) {
+		a.skew = d
+	}
+}
+
 // NewApplicationTokenSource creates a GitHub App JWT token source from a
 // PEM-encoded RSA private key.
 // Accepts either int64 App ID or string Client ID. GitHub recommends Client IDs for new apps.
 // Generated JWTs are RS256-signed with iat, exp, and iss claims.
 // JWTs expire in max 10 minutes and include clock drift protection (iat set 60s in past).
 //
-// The returned token source is wrapped in oauth2.ReuseTokenSource to prevent unnecessary
-// token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
-// prevents re-wrapping automatically.
+// The returned token source is wrapped in ReuseTokenSourceWithSkew with
+// DefaultExpirySkew (30s), so cached tokens are refreshed before exp rather
+// than after. With the default 10-minute expiration the effective validity
+// is 9m30s. Override with WithExpirySkew.
 //
 // For KMS, HSM, Vault, or ssh-agent backed signing, use
 // NewApplicationTokenSourceFromSigner instead — the private key never leaves
@@ -140,11 +222,12 @@ func newApplicationTokenSource(issuer string, signer crypto.Signer, opts ...Appl
 		issuer:     issuer,
 		signer:     signer,
 		expiration: DefaultApplicationTokenExpiration,
+		skew:       DefaultExpirySkew,
 	}
 	for _, opt := range opts {
 		opt(t)
 	}
-	return oauth2.ReuseTokenSource(nil, t)
+	return ReuseTokenSourceWithSkew(nil, t, t.skew)
 }
 
 // Token generates a GitHub App JWT with required claims: iat, exp, iss, and alg.
@@ -223,6 +306,18 @@ func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 	}
 }
 
+// WithInstallationExpirySkew overrides the default early-refresh window
+// (DefaultExpirySkew, 30s) applied to the installation token cache returned
+// by NewInstallationTokenSource. Installation tokens live 1 hour, so the 30s
+// default leaves ~59m30s effective validity — this option exists mostly for
+// parity with WithExpirySkew. A zero or negative value falls back to
+// oauth2.ReuseTokenSource behavior.
+func WithInstallationExpirySkew(d time.Duration) InstallationTokenSourceOpt {
+	return func(i *installationTokenSource) {
+		i.skew = d
+	}
+}
+
 // installationTokenSource represents a GitHub App installation token source
 // that generates access tokens for authenticating as a specific GitHub App installation.
 //
@@ -233,14 +328,16 @@ type installationTokenSource struct {
 	src    oauth2.TokenSource
 	client *githubClient
 	opts   *InstallationTokenOptions
+	skew   time.Duration
 }
 
 // NewInstallationTokenSource creates a GitHub App installation token source.
 // Requires installation ID and a GitHub App JWT token source for authentication.
 //
-// The returned token source is wrapped in oauth2.ReuseTokenSource to prevent unnecessary
-// token regeneration. Don't worry about wrapping the result again since ReuseTokenSource
-// prevents re-wrapping automatically.
+// The returned token source is wrapped in ReuseTokenSourceWithSkew so cached
+// tokens are refreshed DefaultExpirySkew before their expiry, eliminating
+// in-flight 401s when a request starts close to exp and reaches GitHub after.
+// Override the window with WithInstallationExpirySkew.
 //
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
@@ -257,13 +354,14 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 		ctx:    ctx,
 		src:    src,
 		client: newGitHubClient(httpClient),
+		skew:   DefaultExpirySkew,
 	}
 
 	for _, opt := range opts {
 		opt(i)
 	}
 
-	return oauth2.ReuseTokenSource(nil, i)
+	return ReuseTokenSourceWithSkew(nil, i, i.skew)
 }
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.

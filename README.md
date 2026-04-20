@@ -47,7 +47,7 @@
 - Sign JWTs with external `crypto.Signer` backends (AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault Transit, PKCS#11 HSMs, ssh-agent) so the private key never touches process memory
 - RS256-signed JWTs with proper clock drift protection
 - Support for both legacy App IDs and modern Client IDs (recommended by GitHub)
-- Intelligent token caching with automatic refresh for optimal performance
+- Intelligent token caching with **proactive refresh** — tokens are regenerated 30s before expiry to eliminate in-flight 401s (tunable via `WithExpirySkew` / `WithInstallationExpirySkew`)
 - Clean HTTP clients with connection pooling and no shared state
 
 ### Requirements
@@ -277,6 +277,37 @@ func main() {
  fmt.Println("Generated installation token:", token.AccessToken)
 }
 ```
+
+### Proactive Token Refresh
+
+`oauth2.ReuseTokenSource` only refreshes a cached token *after* its expiry has passed. A request that starts at `T-100ms` with a token expiring at `T` can arrive at GitHub with an already-expired credential and receive a 401 that the caller must manually retry. This is especially painful with short application-token windows (default 10 min, optionally lower).
+
+Both `NewApplicationTokenSource` and `NewInstallationTokenSource` wrap the returned source in `ReuseTokenSourceWithSkew`, which refreshes when `time.Until(exp) <= skew`. The default `DefaultExpirySkew` is **30 seconds**, so a default 10-minute application JWT has ~9m30s of effective validity — the tail risk is closed, the overhead is negligible.
+
+```go
+// Use a shorter skew (e.g. to maximize validity for very short JWTs).
+appTokenSource, err := githubauth.NewApplicationTokenSource(
+    clientID,
+    privateKey,
+    githubauth.WithApplicationTokenExpiration(1*time.Minute),
+    githubauth.WithExpirySkew(5*time.Second),
+)
+
+// Override the installation-layer skew too (default 30s is usually fine for 1h tokens).
+installationTokenSource := githubauth.NewInstallationTokenSource(
+    installationID,
+    appTokenSource,
+    githubauth.WithInstallationExpirySkew(1*time.Minute),
+)
+```
+
+Passing `WithExpirySkew(0)` (or any non-positive value) disables the skew and falls back to the exact `oauth2.ReuseTokenSource` behavior. For third-party `oauth2.TokenSource` implementations outside this package, `ReuseTokenSourceWithSkew` is exported directly:
+
+```go
+src := githubauth.ReuseTokenSourceWithSkew(nil, someTokenSource, 30*time.Second)
+```
+
+The wrapper is safe for concurrent use — concurrent `Token()` calls that find the cache stale collapse into a single upstream fetch.
 
 ### Signing with External Key Stores (AWS KMS, GCP KMS, Vault, HSM)
 
