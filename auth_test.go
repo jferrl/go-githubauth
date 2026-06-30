@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -225,8 +226,10 @@ func TestNewApplicationTokenSourceFromSigner(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "non-rsa signer is rejected",
-			new:     func() (oauth2.TokenSource, error) { return NewApplicationTokenSourceFromSigner(int64(42), &stubSigner{pub: edPub}) },
+			name: "non-rsa signer is rejected",
+			new: func() (oauth2.TokenSource, error) {
+				return NewApplicationTokenSourceFromSigner(int64(42), &stubSigner{pub: edPub})
+			},
 			wantErr: true,
 		},
 		{
@@ -472,21 +475,179 @@ func TestWithEnterpriseURL_InvalidURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test with invalid URL - error is silently ignored in WithEnterpriseURL
+	// An invalid URL must not silently fall back to the public GitHub API; the
+	// error surfaces on the first Token() call instead.
 	installationTokenSource := NewInstallationTokenSource(
 		1,
 		appSrc,
 		WithEnterpriseURL("ht\ntp://invalid"),
 	)
 
-	// The error is silently ignored in WithEnterpriseURL, so this should still work
-	// but will use the default URL
 	if installationTokenSource == nil {
-		t.Error("Expected non-nil token source")
+		t.Fatal("Expected non-nil token source")
 	}
 
-	// Test that the token source is created successfully
-	// The error is silently ignored, so the source uses the default URL
+	if _, err := installationTokenSource.Token(); err == nil {
+		t.Error("Token() error = nil, want error for invalid enterprise URL")
+	}
+}
+
+func TestWithBaseURL_InvalidURL(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appSrc, err := NewApplicationTokenSource(int64(12345), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An invalid URL must not silently fall back to the public GitHub API; the
+	// error surfaces on the first Token() call instead.
+	installationTokenSource := NewInstallationTokenSource(
+		1,
+		appSrc,
+		WithBaseURL("ht\ntp://invalid"),
+	)
+
+	if installationTokenSource == nil {
+		t.Fatal("Expected non-nil token source")
+	}
+
+	if _, err := installationTokenSource.Token(); err == nil {
+		t.Error("Token() error = nil, want error for invalid base URL")
+	}
+}
+
+func TestWithBaseURL_DrivesTokenThroughServer(t *testing.T) {
+	now := time.Now().UTC()
+	expiration := now.Add(10 * time.Minute)
+
+	// A bare httptest server URL (e.g. http://127.0.0.1:PORT) is exactly the
+	// case WithEnterpriseURL mishandles: it would append "/api/v3/" and break
+	// the mock. WithBaseURL uses the URL verbatim, so the installation-token
+	// POST lands on the expected path.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/1/access_tokens" {
+			t.Errorf("unexpected request path = %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(InstallationToken{
+			Token:     "mocked-installation-token",
+			ExpiresAt: expiration,
+		})
+	}))
+	defer server.Close()
+
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appSrc, err := NewApplicationTokenSource(int64(34434), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := NewInstallationTokenSource(1, appSrc, WithBaseURL(server.URL))
+
+	got, err := ts.Token()
+	if err != nil {
+		t.Fatalf("Token() error = %v", err)
+	}
+
+	want := &oauth2.Token{
+		AccessToken: "mocked-installation-token",
+		TokenType:   "Bearer",
+		Expiry:      expiration,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Token() = %v, want %v", got, want)
+	}
+}
+
+// TestWithBaseURL_SurvivesHTTPClientOrder guards against the ordering footgun:
+// WithBaseURL is applied BEFORE WithHTTPClient, and the configured base URL must
+// survive the HTTP client swap. If it did not, the request would be sent to the
+// public GitHub API instead of the test server.
+func TestWithBaseURL_SurvivesHTTPClientOrder(t *testing.T) {
+	now := time.Now().UTC()
+	expiration := now.Add(10 * time.Minute)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/7/access_tokens" {
+			t.Errorf("request path = %q, want /app/installations/7/access_tokens", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(InstallationToken{Token: "ordered-token", ExpiresAt: expiration})
+	}))
+	defer server.Close()
+
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := NewInstallationTokenSource(7, appSrc,
+		WithBaseURL(server.URL),
+		WithHTTPClient(&http.Client{}),
+	)
+
+	got, err := ts.Token()
+	if err != nil {
+		t.Fatalf("Token() error = %v", err)
+	}
+	if got.AccessToken != "ordered-token" {
+		t.Errorf("AccessToken = %q, want %q", got.AccessToken, "ordered-token")
+	}
+}
+
+func TestWithHTTPClient_NilClient(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A nil HTTP client must not panic; the error surfaces on Token().
+	ts := NewInstallationTokenSource(1, appSrc, WithHTTPClient(nil))
+	if _, err := ts.Token(); err == nil {
+		t.Error("Token() error = nil, want error for nil http client")
+	}
+}
+
+func TestWithHTTPClient_DoesNotMutateCallerClient(t *testing.T) {
+	privateKey, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalTransport := http.DefaultTransport
+	client := &http.Client{Transport: originalTransport}
+
+	_ = NewInstallationTokenSource(1, appSrc, WithHTTPClient(client))
+
+	// The option must operate on a copy; the caller's client (which may be
+	// shared elsewhere) must keep its original transport.
+	if client.Transport != originalTransport {
+		t.Errorf("WithHTTPClient mutated the caller's client Transport = %T, want it unchanged", client.Transport)
+	}
 }
 
 func Test_installationTokenSource_Token(t *testing.T) {
@@ -1035,9 +1196,9 @@ func TestWithExpirySkew_Wiring(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		skewOpts  []ApplicationTokenOpt
-		wantSkew  bool // true → *reuseTokenSourceWithSkew, false → delegated
+		name     string
+		skewOpts []ApplicationTokenOpt
+		wantSkew bool // true → *reuseTokenSourceWithSkew, false → delegated
 	}{
 		{
 			name:     "default skew uses wrapper",

@@ -96,7 +96,7 @@ type Repository struct {
 // githubClient is a simple GitHub API client for creating installation tokens.
 type githubClient struct {
 	baseURL         *url.URL
-	client          *http.Client
+	httpClient      *http.Client
 	retryOnThrottle bool
 }
 
@@ -106,7 +106,7 @@ func newGitHubClient(httpClient *http.Client) *githubClient {
 
 	return &githubClient{
 		baseURL:         baseURL,
-		client:          httpClient,
+		httpClient:      httpClient,
 		retryOnThrottle: true,
 	}
 }
@@ -126,6 +126,25 @@ func (c *githubClient) withEnterpriseURL(baseURL string) (*githubClient, error) 
 		!strings.HasPrefix(base.Host, "api.") &&
 		!strings.Contains(base.Host, ".api.") {
 		base.Path += "api/v3/"
+	}
+
+	c.baseURL = base
+
+	return c, nil
+}
+
+// withBaseURL sets the API base URL verbatim, applying none of the GitHub
+// Enterprise Server path rewriting that withEnterpriseURL performs. Only a
+// trailing slash is appended when missing so that endpoint resolution via
+// baseURL.Parse works correctly.
+func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+	}
+
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
 	}
 
 	c.baseURL = base
@@ -188,7 +207,7 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to execute request: %w", err)
 	}

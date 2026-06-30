@@ -278,6 +278,38 @@ func main() {
 }
 ```
 
+### GitHub Enterprise and Custom Base URLs
+
+The installation token source talks to `https://api.github.com/` by default. Two options point it elsewhere:
+
+- `WithEnterpriseURL` — for **GitHub Enterprise Server (GHES)**. The supplied URL is normalized the way GHES expects, appending `/api/v3/` when the host is not already an `api.` subdomain.
+- `WithBaseURL` — uses the URL **verbatim** (only adding a trailing slash when missing), closely mirroring how `go-github` lets you set a custom endpoint. No `/api/v3/` suffix is added. Use it for **GitHub Enterprise Cloud (GHEC) with data residency** (`https://api.SUBDOMAIN.ghe.com/`) or to point the client at an `httptest` server in your tests.
+
+```go
+// GitHub Enterprise Server (GHES)
+installationTokenSource := githubauth.NewInstallationTokenSource(
+    installationID,
+    appTokenSource,
+    githubauth.WithEnterpriseURL("https://github.example.com"),
+)
+
+// GitHub Enterprise Cloud (GHEC) with data residency
+installationTokenSource = githubauth.NewInstallationTokenSource(
+    installationID,
+    appTokenSource,
+    githubauth.WithBaseURL("https://api.octocorp.ghe.com"),
+)
+
+// Point at an httptest server in tests
+installationTokenSource = githubauth.NewInstallationTokenSource(
+    installationID,
+    appTokenSource,
+    githubauth.WithBaseURL(server.URL),
+)
+```
+
+Option order does not matter — `WithBaseURL`, `WithEnterpriseURL`, `WithHTTPClient`, and `WithRetryOnThrottle` can be combined in any order. If the provided URL cannot be parsed (or a `nil` HTTP client is passed), the misconfiguration is reported by the first call to `Token()` rather than silently falling back to the public GitHub API.
+
 ### Proactive Token Refresh
 
 `oauth2.ReuseTokenSource` only refreshes a cached token *after* its expiry has passed. A request that starts at `T-100ms` with a token expiring at `T` can arrive at GitHub with an already-expired credential and receive a 401 that the caller must manually retry. This is especially painful with short application-token windows (default 10 min, optionally lower).

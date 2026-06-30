@@ -273,29 +273,69 @@ func WithInstallationTokenOptions(opts *InstallationTokenOptions) InstallationTo
 	}
 }
 
-// WithHTTPClient sets the HTTP client for the GitHub App installation token source.
+// WithHTTPClient sets the HTTP client used to call the GitHub API. Its transport
+// is wrapped so installation-token requests are authenticated with the GitHub
+// App JWT; any base URL configured via WithBaseURL or WithEnterpriseURL is
+// preserved, so these options may be combined in any order.
+//
+// A nil client is a configuration error reported by the first call to Token().
 func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
-		client.Transport = &oauth2.Transport{
+		if client == nil {
+			i.setConfigErr(errors.New("WithHTTPClient: http client must not be nil"))
+			return
+		}
+
+		// Work on a shallow copy so the caller's *http.Client is not mutated;
+		// only the Transport is swapped to inject GitHub App authentication.
+		authClient := *client
+		authClient.Transport = &oauth2.Transport{
 			Source: i.src,
 			Base:   client.Transport,
 		}
 
-		i.client = newGitHubClient(client)
+		// Swap only the underlying *http.Client so the base URL and retry
+		// settings already configured on i.client survive, regardless of the
+		// order options are applied in.
+		i.client.httpClient = &authClient
 	}
 }
 
-// WithEnterpriseURL sets the base URL for GitHub Enterprise Server.
-// This option should be used after WithHTTPClient to ensure the HTTP client is properly configured.
-// If the provided base URL is invalid, the option is ignored and default GitHub base URL is used.
+// WithEnterpriseURL sets the base URL for GitHub Enterprise Server (GHES). The
+// URL is normalized the way GHES expects, appending the "/api/v3/" path when the
+// host is not already an "api." subdomain. For GitHub Enterprise Cloud or a
+// verbatim URL (such as an httptest server), use WithBaseURL instead.
+//
+// Option order does not matter; it may be combined with WithHTTPClient,
+// WithBaseURL, and WithRetryOnThrottle in any order. If the URL cannot be
+// parsed, the error is reported by the first call to Token() rather than
+// silently falling back to the public GitHub API.
 func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
-		enterpriseClient, err := i.client.withEnterpriseURL(baseURL)
-		if err != nil {
-			return
+		if _, err := i.client.withEnterpriseURL(baseURL); err != nil {
+			i.setConfigErr(err)
 		}
+	}
+}
 
-		i.client = enterpriseClient
+// WithBaseURL sets the API base URL used to create installation tokens, closely
+// mirroring how go-github lets callers point the client at a custom endpoint.
+// Unlike WithEnterpriseURL, the URL is used verbatim — only a trailing slash is
+// appended when missing, and no "/api/v3/" suffix is added.
+//
+// Use this for:
+//   - GitHub Enterprise Cloud with data residency (https://api.SUBDOMAIN.ghe.com/)
+//   - pointing the client at an httptest server in tests
+//
+// Option order does not matter; it may be combined with WithHTTPClient,
+// WithEnterpriseURL, and WithRetryOnThrottle in any order. If the URL cannot be
+// parsed, the error is reported by the first call to Token() rather than
+// silently falling back to the public GitHub API.
+func WithBaseURL(baseURL string) InstallationTokenSourceOpt {
+	return func(i *installationTokenSource) {
+		if _, err := i.client.withBaseURL(baseURL); err != nil {
+			i.setConfigErr(err)
+		}
 	}
 }
 
@@ -347,6 +387,20 @@ type installationTokenSource struct {
 	client *githubClient
 	opts   *InstallationTokenOptions
 	skew   time.Duration
+
+	// configErr records the first invalid-configuration error encountered while
+	// applying options (e.g. an unparseable base URL or a nil HTTP client). It is
+	// surfaced by Token() so misconfiguration fails loudly instead of silently
+	// falling back to the public GitHub API.
+	configErr error
+}
+
+// setConfigErr records err as the source's configuration error, keeping the
+// first error so the reported failure is independent of option order.
+func (t *installationTokenSource) setConfigErr(err error) {
+	if t.configErr == nil {
+		t.configErr = err
+	}
 }
 
 // NewInstallationTokenSource creates a GitHub App installation token source.
@@ -384,6 +438,10 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
 func (t *installationTokenSource) Token() (*oauth2.Token, error) {
+	if t.configErr != nil {
+		return nil, t.configErr
+	}
+
 	token, err := t.client.createInstallationToken(t.ctx, t.id, t.opts)
 	if err != nil {
 		return nil, err
