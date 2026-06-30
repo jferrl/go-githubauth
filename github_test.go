@@ -100,6 +100,73 @@ func Test_githubClient_withEnterpriseURL(t *testing.T) {
 	}
 }
 
+func Test_githubClient_withBaseURL(t *testing.T) {
+	tests := []struct {
+		name            string
+		baseURL         string
+		wantErr         bool
+		expectedBaseURL string
+	}{
+		{
+			name:            "GHEC data residency URL is used verbatim",
+			baseURL:         "https://api.octocorp.ghe.com",
+			wantErr:         false,
+			expectedBaseURL: "https://api.octocorp.ghe.com/",
+		},
+		{
+			name:            "GHEC data residency URL with trailing slash",
+			baseURL:         "https://api.octocorp.ghe.com/",
+			wantErr:         false,
+			expectedBaseURL: "https://api.octocorp.ghe.com/",
+		},
+		{
+			name:            "plain host without /api/v3 suffix appended",
+			baseURL:         "https://github.example.com",
+			wantErr:         false,
+			expectedBaseURL: "https://github.example.com/",
+		},
+		{
+			name:            "existing path is preserved without /api/v3 munging",
+			baseURL:         "https://github.example.com/api/v3",
+			wantErr:         false,
+			expectedBaseURL: "https://github.example.com/api/v3/",
+		},
+		{
+			name:            "httptest-style host and port used verbatim",
+			baseURL:         "http://127.0.0.1:8080",
+			wantErr:         false,
+			expectedBaseURL: "http://127.0.0.1:8080/",
+		},
+		{
+			name:            "invalid URL with control characters",
+			baseURL:         "ht\ntp://invalid",
+			wantErr:         true,
+			expectedBaseURL: "",
+		},
+		{
+			name:            "URL with spaces",
+			baseURL:         "http://invalid url with spaces",
+			wantErr:         true,
+			expectedBaseURL: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newGitHubClient(&http.Client{})
+			githubClient, err := client.withBaseURL(tt.baseURL)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("withBaseURL(%v) error = %v", tt.baseURL, err)
+			}
+
+			if err == nil && githubClient.baseURL.String() != tt.expectedBaseURL {
+				t.Errorf("withBaseURL(%v) expected = %v, received = %v", tt.baseURL, tt.expectedBaseURL, githubClient.baseURL)
+			}
+		})
+	}
+}
+
 func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -291,8 +358,8 @@ func Test_createInstallationToken_ErrorPaths(t *testing.T) {
 	t.Run("error parsing endpoint URL", func(t *testing.T) {
 		// Create a client with an invalid base URL that will cause Parse to fail
 		client := &githubClient{
-			baseURL: &url.URL{Scheme: "http", Host: "example.com", Path: ":::invalid"},
-			client:  &http.Client{},
+			baseURL:    &url.URL{Scheme: "http", Host: "example.com", Path: ":::invalid"},
+			httpClient: &http.Client{},
 		}
 
 		_, err := client.createInstallationToken(context.Background(), 12345, nil)

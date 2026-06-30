@@ -89,9 +89,12 @@ func (t *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // matchesPattern performs simple pattern matching for GitHub API endpoints.
 func matchesPattern(request, pattern string) bool {
-	// Handle the specific case used in tests: POST /app/installations/{installation_id}/access_tokens
+	// Handle the specific case used in tests: POST /app/installations/{installation_id}/access_tokens.
+	// Tolerate an Enterprise base-path prefix (e.g. /api/v3/) so requests routed
+	// through WithEnterpriseURL still match regardless of option ordering.
 	if pattern == "POST /app/installations/{installation_id}/access_tokens" {
-		return strings.HasPrefix(request, "POST /app/installations/") &&
+		return strings.HasPrefix(request, "POST ") &&
+			strings.Contains(request, "/app/installations/") &&
 			strings.HasSuffix(request, "/access_tokens")
 	}
 
