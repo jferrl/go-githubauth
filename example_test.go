@@ -84,7 +84,7 @@ func ExampleNewInstallationTokenSource() {
 		fmt.Println("listing installation repositories:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	fmt.Println("status:", resp.Status)
 }
@@ -166,7 +166,7 @@ func ExampleNewPersonalAccessTokenSource() {
 		fmt.Println("getting user:", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	fmt.Println("status:", resp.Status)
 }
