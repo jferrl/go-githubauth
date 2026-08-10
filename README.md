@@ -22,6 +22,23 @@
 
 ---
 
+## Comparison with ghinstallation
+
+[`ghinstallation`](https://github.com/bradleyfalzon/ghinstallation) is the long-standing library in this space and works well. The core difference is the integration model: `ghinstallation` is an `http.RoundTripper` you install as an HTTP transport, while `go-githubauth` implements `oauth2.TokenSource`, so credentials compose with anything that speaks oauth2 — `oauth2.NewClient`, [go-github](https://github.com/google/go-github), gRPC per-RPC credentials, or code that just needs the token string.
+
+|  | go-githubauth | ghinstallation |
+|---|---|---|
+| Integration model | `oauth2.TokenSource` | `http.RoundTripper` |
+| Dependencies | `golang-jwt/jwt`, `x/oauth2` | `golang-jwt/jwt`, `google/go-github` |
+| App identifiers | Client ID (`string`, recommended by GitHub) and App ID (`int64`) | App ID (`int64`) |
+| Token refresh | Proactive, tunable (`WithExpirySkew`, default 30s) | Proactive, fixed 1 minute |
+| External signers (KMS/HSM) | Standard `crypto.Signer` — existing KMS adapters plug in directly | Library-specific `Signer` interface |
+| Webhook signature verification | Included (`webhook` subpackage) | Not included |
+| Personal access tokens | Included | Not included |
+| GitHub Enterprise | `WithEnterpriseURL` (GHES) and `WithBaseURL` (GHEC data residency) | `BaseURL` field |
+
+If `ghinstallation` already fits your setup, there is no urgent reason to switch. Choose `go-githubauth` when you want oauth2-native composition, Client ID support, KMS-backed signing through the standard `crypto.Signer` interface, or a smaller dependency tree.
+
 ## Features
 
 `go-githubauth` package provides implementations of the `TokenSource` interface from the `golang.org/x/oauth2` package. This interface has a single method, Token, which returns an *oauth2.Token.
