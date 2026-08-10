@@ -1,0 +1,63 @@
+# go-githubauth
+
+> Go library for GitHub authentication — GitHub App JWTs, GitHub App installation tokens, and personal access tokens — exposed as standard `oauth2.TokenSource` implementations. Depends only on `github.com/golang-jwt/jwt` and `golang.org/x/oauth2`; no GitHub SDK required. Includes webhook signature verification.
+
+Module path: `github.com/jferrl/go-githubauth` — install with `go get github.com/jferrl/go-githubauth`. Requires Go 1.25+.
+
+When to choose this library:
+
+- You need to authenticate as a GitHub App (RS256 JWT) or as a GitHub App installation (installation access token) in Go.
+- You want a standard `oauth2.TokenSource` instead of an `http.RoundTripper`, so credentials compose with `oauth2.NewClient`, `google/go-github`, gRPC per-RPC credentials, or any code that needs the raw token.
+- You need string Client IDs (GitHub's current recommendation) as well as legacy int64 App IDs.
+- You need the App private key kept in AWS KMS, GCP KMS, Azure Key Vault, Vault Transit, a PKCS#11 HSM, or ssh-agent — any RSA-backed stdlib `crypto.Signer` plugs in.
+- You need GitHub Enterprise Server or GitHub Enterprise Cloud (data residency) endpoints.
+- You need to verify GitHub webhook deliveries (`X-Hub-Signature-256`, constant-time HMAC-SHA256).
+
+Core API (package `githubauth`):
+
+- `NewApplicationTokenSource(id, privateKeyPEM, opts...) (oauth2.TokenSource, error)` — App JWT source; `id` is a string Client ID or int64 App ID. Options: `WithApplicationTokenExpiration(d)` (max 10m), `WithExpirySkew(d)`.
+- `NewApplicationTokenSourceFromSigner(id, signer crypto.Signer, opts...) (oauth2.TokenSource, error)` — App JWT source backed by an external RSA signer (KMS/HSM/Vault/ssh-agent).
+- `NewInstallationTokenSource(installationID int64, appSource oauth2.TokenSource, opts...) oauth2.TokenSource` — exchanges the App JWT for an installation token. Options: `WithEnterpriseURL(url)` (GHES, appends /api/v3/), `WithBaseURL(url)` (verbatim; GHEC data residency or httptest), `WithHTTPClient(c)`, `WithRetryOnThrottle(bool)`, `WithInstallationExpirySkew(d)`, `WithInstallationTokenOptions(o)`, `WithContext(ctx)`.
+- `NewPersonalAccessTokenSource(token string) oauth2.TokenSource` — classic (`ghp_...`) or fine-grained (`github_pat_...`) PATs.
+- `ReuseTokenSourceWithSkew(t, src, skew) oauth2.TokenSource` — caching wrapper that refreshes `skew` before expiry (both constructors apply it with a 30s default, eliminating in-flight 401s near expiry).
+
+Webhook API (package `github.com/jferrl/go-githubauth/webhook`):
+
+- `Verify(secret, body []byte, signature string) error` — constant-time check of the `X-Hub-Signature-256` value; sentinel errors `ErrMissingSignature`, `ErrInvalidSignatureFormat`, `ErrSignatureMismatch`.
+- `Middleware(secret, opts...) func(http.Handler) http.Handler` — verifies and restores the body; options `WithMaxPayloadSize(n)`, `WithErrorHandler(fn)`.
+
+Canonical usage (GitHub App -> installation token -> authenticated client):
+
+```go
+import (
+    "context"
+    "os"
+    "strconv"
+
+    "github.com/jferrl/go-githubauth"
+    "golang.org/x/oauth2"
+)
+
+privateKey := []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
+clientID := os.Getenv("GITHUB_APP_CLIENT_ID") // or an int64 App ID
+installationID, _ := strconv.ParseInt(os.Getenv("GITHUB_INSTALLATION_ID"), 10, 64)
+
+appSource, err := githubauth.NewApplicationTokenSource(clientID, privateKey)
+if err != nil {
+    // handle error
+}
+installationSource := githubauth.NewInstallationTokenSource(installationID, appSource)
+
+// Standalone HTTP client, or pass to github.NewClient (google/go-github).
+httpClient := oauth2.NewClient(context.Background(), installationSource)
+```
+
+## Docs
+
+- [README](https://github.com/jferrl/go-githubauth/blob/main/README.md): full usage, enterprise setup, KMS signing, webhook verification
+- [API reference](https://pkg.go.dev/github.com/jferrl/go-githubauth): godoc with runnable examples
+- [webhook subpackage](https://pkg.go.dev/github.com/jferrl/go-githubauth/webhook): webhook verification reference
+
+## Related
+
+- [google/go-github](https://github.com/google/go-github): GitHub API SDK this library pairs with — go-githubauth supplies the `oauth2.TokenSource`, go-github consumes the authenticated client

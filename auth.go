@@ -1,9 +1,3 @@
-// Package githubauth provides utilities for GitHub authentication,
-// including generating and using GitHub App tokens and installation tokens.
-//
-// This package implements oauth2.TokenSource interfaces for GitHub App
-// authentication and GitHub App installation token generation. It is built
-// on top of the golang.org/x/oauth2 library.
 package githubauth
 
 import (
