@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -25,9 +26,21 @@ const (
 	// DefaultExpirySkew is the default early-refresh window applied to cached
 	// tokens returned by NewApplicationTokenSource and NewInstallationTokenSource.
 	// At 30s the effective validity of a default 10-minute application JWT becomes
-	// 9m30s, which is acceptable and eliminates the common in-flight 401 caused
+	// 8m30s, which is acceptable and eliminates the common in-flight 401 caused
 	// by a request starting near exp and arriving at GitHub after exp.
 	DefaultExpirySkew = 30 * time.Second
+
+	// applicationTokenBackdate is how far into the past the iat claim of an
+	// application JWT is set, so a fast local clock cannot make GitHub see an
+	// iat in the future. It is subtracted from exp as well, so it is also the
+	// lower bound an expiration must exceed to yield a usable token.
+	applicationTokenBackdate = 60 * time.Second
+
+	// minApplicationTokenExpiration is the smallest expiration that yields a
+	// token the cache can actually hold: it must clear the backdate (or the JWT
+	// is born expired) and then the refresh skew on top (or every Token() call
+	// re-signs). Expirations at or below it fall back to the default.
+	minApplicationTokenExpiration = applicationTokenBackdate + DefaultExpirySkew
 
 	// bearerTokenType is the token type used for OAuth2 Bearer tokens.
 	bearerTokenType = "Bearer"
@@ -110,11 +123,16 @@ type applicationTokenSource struct {
 type ApplicationTokenOpt func(*applicationTokenSource)
 
 // WithApplicationTokenExpiration sets the JWT expiration duration.
-// Must be between 0 and 10 minutes per GitHub's JWT requirements. Invalid values default to 10 minutes.
+// Must be greater than 90 seconds and at most 10 minutes. Ten minutes is
+// GitHub's ceiling. The lower bound is the 60 second clock-drift backdate plus
+// DefaultExpirySkew: at or below the backdate the JWT is already expired when
+// minted, and within the skew above it the cache never holds the token, so
+// every call re-signs — a remote round trip for a KMS, HSM or Vault signer.
+// Invalid values default to 10 minutes.
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app#about-json-web-tokens-jwts
 func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 	return func(a *applicationTokenSource) {
-		if exp > DefaultApplicationTokenExpiration || exp <= 0 {
+		if exp > DefaultApplicationTokenExpiration || exp <= minApplicationTokenExpiration {
 			exp = DefaultApplicationTokenExpiration
 		}
 		a.expiration = exp
@@ -129,8 +147,8 @@ func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
 //
 // Tune this when your application token expiration (see
 // WithApplicationTokenExpiration) is short: the effective validity is
-// expiration - skew, so with the default 10-minute expiration and 30s skew
-// tokens are refreshed at 9m30s.
+// expiration - 60s of clock-drift backdating - skew, so with the default
+// 10-minute expiration and 30s skew tokens are refreshed at 8m30s.
 func WithExpirySkew(d time.Duration) ApplicationTokenOpt {
 	return func(a *applicationTokenSource) {
 		a.skew = d
@@ -145,8 +163,9 @@ func WithExpirySkew(d time.Duration) ApplicationTokenOpt {
 //
 // The returned token source is wrapped in ReuseTokenSourceWithSkew with
 // DefaultExpirySkew (30s), so cached tokens are refreshed before exp rather
-// than after. With the default 10-minute expiration the effective validity
-// is 9m30s. Override with WithExpirySkew.
+// than after. With the default 10-minute expiration, which is backdated 60s
+// for clock drift, the effective validity is 8m30s. Override with
+// WithExpirySkew.
 //
 // For KMS, HSM, Vault, or ssh-agent backed signing, use
 // NewApplicationTokenSourceFromSigner instead — the private key never leaves
@@ -195,17 +214,23 @@ func NewApplicationTokenSourceFromSigner[T Identifier](id T, signer crypto.Signe
 // resolveIssuer converts a generic App ID / Client ID to its string form
 // and rejects zero values.
 func resolveIssuer[T Identifier](id T) (string, error) {
-	switch v := any(id).(type) {
-	case int64:
-		if v == 0 {
+	// Identifier is "~int64 | ~string", so defined types such as
+	// "type AppID int64" satisfy it. A type switch matches the exact dynamic
+	// type and would reject those, hence the switch on the underlying kind.
+	v := reflect.ValueOf(id)
+	switch v.Kind() {
+	case reflect.Int64:
+		n := v.Int()
+		if n == 0 {
 			return "", errors.New("application identifier is required")
 		}
-		return strconv.FormatInt(v, 10), nil
-	case string:
-		if v == "" {
+		return strconv.FormatInt(n, 10), nil
+	case reflect.String:
+		s := v.String()
+		if s == "" {
 			return "", errors.New("application identifier is required")
 		}
-		return v, nil
+		return s, nil
 	default:
 		return "", errors.New("unsupported identifier type")
 	}
@@ -230,7 +255,7 @@ func newApplicationTokenSource(issuer string, signer crypto.Signer, opts ...Appl
 // Generated JWTs can be used with "Authorization: Bearer" header for GitHub API requests.
 func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	// To protect against clock drift, set the issuance time 60 seconds in the past.
-	now := time.Now().Add(-60 * time.Second)
+	now := time.Now().Add(-applicationTokenBackdate)
 	expiresAt := now.Add(t.expiration)
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
@@ -344,14 +369,19 @@ func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 }
 
 // WithRetryOnThrottle enables or disables a single automatic retry when
-// GitHub returns a throttled response (HTTP 429, or 403 with rate-limit
-// headers) for the installation token POST. Enabled by default.
+// GitHub throttles the installation token POST. Enabled by default.
 //
-// On a throttled response the client sleeps the duration hinted by
-// Retry-After or x-ratelimit-reset (capped at 60s, honoring ctx cancellation)
-// and retries once. Subsequent failures bubble up unchanged. On a terminal
-// throttle the returned error wraps ErrRateLimited so callers can branch with
-// errors.Is.
+// Any 429 counts as throttled. A 403 counts only when GitHub identifies it as a
+// rate limit — it carries Retry-After, reports an exhausted budget via
+// X-RateLimit-Remaining: 0, or says so in its message. A permission failure such
+// as "Resource not accessible by integration" is terminal and is retried by
+// neither setting, despite carrying rate-limit headers.
+//
+// On a throttled response the client sleeps the duration hinted by Retry-After
+// or x-ratelimit-reset, falling back to one minute for a hintless rate-limit 403
+// (capped at 60s, honoring ctx cancellation), and retries once. Subsequent
+// failures bubble up unchanged. On a terminal throttle the returned error wraps
+// ErrRateLimited so callers can branch with errors.Is.
 //
 // Disable this when the caller implements its own backoff or when deterministic
 // latency matters more than transient rate-limit resilience.
