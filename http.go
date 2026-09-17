@@ -18,9 +18,14 @@ func cleanHTTPClient() *http.Client {
 				Timeout:   30 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			// Without this a server that accepts the connection and then stalls
+			// hangs Token() forever: the default context is context.Background(),
+			// and the token cache holds its mutex across the refresh, so one
+			// stalled request blocks every concurrent caller.
+			ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) + 1,
