@@ -41,6 +41,26 @@
 // already-expired credential. The window is tunable with WithExpirySkew
 // (application JWTs) and WithInstallationExpirySkew (installation tokens).
 //
+// # Recovering from a revoked token
+//
+// Expiry is not the only way a token dies. GitHub revokes an installation
+// token when the App is suspended, when its permissions change, on an explicit
+// revocation, and it revokes every token for an installation when the private
+// key is rotated. A cache keyed on expiry cannot see any of that, so it keeps
+// serving the dead credential and every request 401s until the hour is up.
+//
+// Invalidate discards the cached token so the next call mints a fresh one:
+//
+//	resp, err := client.Do(req)
+//	if resp.StatusCode == http.StatusUnauthorized {
+//		githubauth.Invalidate(installationSource)
+//		// retry once
+//	}
+//
+// It reports false for a source with nothing to discard, such as
+// NewPersonalAccessTokenSource. Sources cache independently, so invalidating an
+// installation token source does not touch the application JWT behind it.
+//
 // # Signing with external key stores
 //
 // NewApplicationTokenSourceFromSigner accepts any RSA-backed [crypto.Signer]

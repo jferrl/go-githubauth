@@ -53,20 +53,90 @@ const (
 // caller must manually retry. This wrapper refreshes when
 // time.Until(t.Expiry) <= skew, cutting out that race.
 //
-// If skew is zero or negative the wrapper delegates to oauth2.ReuseTokenSource,
-// preserving its exact behavior. An initial non-nil t is used until it needs
-// refresh under the same rule. The returned source is safe for concurrent use;
-// concurrent Token calls that find the cache stale collapse into a single
-// upstream fetch.
+// If skew is zero or negative the wrapper defers to oauth2.ReuseTokenSource for
+// refresh timing, preserving its exact behavior. An initial non-nil t is used
+// until it needs refresh under the same rule. The returned source is safe for
+// concurrent use; concurrent Token calls that find the cache stale collapse
+// into a single upstream fetch.
+//
+// The returned source always implements Invalidator, whatever the skew.
 func ReuseTokenSourceWithSkew(t *oauth2.Token, src oauth2.TokenSource, skew time.Duration) oauth2.TokenSource {
 	if skew <= 0 {
-		return oauth2.ReuseTokenSource(t, src)
+		return &reuseTokenSource{src: src, cur: oauth2.ReuseTokenSource(t, src)}
 	}
 	return &reuseTokenSourceWithSkew{
 		t:    t,
 		src:  src,
 		skew: skew,
 	}
+}
+
+// Invalidator is implemented by the caching token sources this package returns.
+// Invalidate discards the cached token so the next Token call fetches a fresh
+// one.
+//
+// It exists because expiry is not the only way a token dies. GitHub revokes an
+// installation token when the App is suspended, when its permissions change, or
+// on an explicit revocation, and it revokes every token for an installation
+// when the private key is rotated. A cache keyed on expiry cannot see any of
+// that: it keeps serving the dead credential, and every request 401s, until the
+// hour is up. Invalidate is the recovery path — call it when a request fails
+// with 401 and retry once.
+//
+// Invalidate affects only the source it is called on. An installation token
+// source and the application JWT source behind it cache separately.
+type Invalidator interface {
+	Invalidate()
+}
+
+// Invalidate discards the cached token of src when src is an Invalidator, and
+// reports whether it did. It saves callers a type assertion on the
+// oauth2.TokenSource this package's constructors return:
+//
+//	resp, err := client.Do(req)
+//	if resp.StatusCode == http.StatusUnauthorized {
+//		githubauth.Invalidate(installationSource)
+//		// retry once; the next Token call mints a fresh credential
+//	}
+//
+// It returns false for a source that does not cache, such as
+// NewPersonalAccessTokenSource or oauth2.StaticTokenSource, where there is
+// nothing to discard.
+func Invalidate(src oauth2.TokenSource) bool {
+	inv, ok := src.(Invalidator)
+	if ok {
+		inv.Invalidate()
+	}
+	return ok
+}
+
+// reuseTokenSource adds Invalidate to oauth2.ReuseTokenSource without altering
+// its refresh timing, which includes its own ten-second early-expiry delta.
+// Invalidate replaces the delegate rather than reaching inside it, because
+// oauth2 exposes no way to clear the cache.
+type reuseTokenSource struct {
+	mu  sync.Mutex
+	src oauth2.TokenSource
+	cur oauth2.TokenSource
+}
+
+func (r *reuseTokenSource) Token() (*oauth2.Token, error) {
+	r.mu.Lock()
+	cur := r.cur
+	r.mu.Unlock()
+
+	// Called outside the lock: the delegate has its own, and a refresh is a
+	// network round trip that must not block Invalidate.
+	return cur.Token()
+}
+
+// Invalidate drops the cached token. The initial token handed to
+// ReuseTokenSourceWithSkew is not restored — it is at least as stale as the one
+// being discarded.
+func (r *reuseTokenSource) Invalidate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cur = oauth2.ReuseTokenSource(nil, r.src)
 }
 
 type reuseTokenSourceWithSkew struct {
@@ -90,6 +160,13 @@ func (r *reuseTokenSourceWithSkew) Token() (*oauth2.Token, error) {
 	}
 	r.t = t
 	return t, nil
+}
+
+// Invalidate drops the cached token so the next Token call refetches.
+func (r *reuseTokenSourceWithSkew) Invalidate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.t = nil
 }
 
 func (r *reuseTokenSourceWithSkew) valid() bool {

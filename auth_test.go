@@ -1635,3 +1635,181 @@ func Test_WithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
 		})
 	}
 }
+
+// Test_Invalidate_ForcesRefresh covers the recovery path for a token that died
+// before its expiry — a suspended App, changed permissions, an explicit
+// revocation, a rotated key. The cache cannot see any of that, so without
+// Invalidate it keeps serving the dead credential for the rest of the hour.
+func Test_Invalidate_ForcesRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		skew time.Duration
+	}{
+		{"with skew", DefaultExpirySkew},
+		{"without skew (delegates to oauth2)", 0},
+		{"negative skew", -1 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var minted atomic.Int32
+			cached := ReuseTokenSourceWithSkew(nil, &mintCounter{n: &minted}, tt.skew)
+
+			first, err := cached.Token()
+			if err != nil {
+				t.Fatalf("Token(): %v", err)
+			}
+			if _, err := cached.Token(); err != nil {
+				t.Fatalf("Token() again: %v", err)
+			}
+			if got := minted.Load(); got != 1 {
+				t.Fatalf("minted %d times before invalidation, want 1 (the cache must hold)", got)
+			}
+
+			if !Invalidate(cached) {
+				t.Fatal("Invalidate() = false, want true; the cached source must implement Invalidator")
+			}
+
+			second, err := cached.Token()
+			if err != nil {
+				t.Fatalf("Token() after invalidation: %v", err)
+			}
+			if got := minted.Load(); got != 2 {
+				t.Errorf("minted %d times after invalidation, want 2", got)
+			}
+			if first.AccessToken == second.AccessToken {
+				t.Errorf("token unchanged after invalidation (%q); the dead credential is still being served", second.AccessToken)
+			}
+		})
+	}
+}
+
+// Test_Invalidate_ConstructedSources checks the sources callers actually hold —
+// the ones the public constructors return — support invalidation, and that a
+// source with nothing to discard reports so rather than silently doing nothing.
+func Test_Invalidate_ConstructedSources(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appSource, err := NewApplicationTokenSourceFromSigner(int64(42), rsaKey)
+	if err != nil {
+		t.Fatalf("construct app source: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		src           oauth2.TokenSource
+		wantCacheable bool
+	}{
+		{"application token source", appSource, true},
+		{"installation token source", NewInstallationTokenSource(42, appSource), true},
+		{"personal access token source", NewPersonalAccessTokenSource("ghp_static"), false},
+		{"oauth2 static source", oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "x"}), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Invalidate(tt.src); got != tt.wantCacheable {
+				t.Errorf("Invalidate() = %v, want %v", got, tt.wantCacheable)
+			}
+		})
+	}
+}
+
+// Test_Invalidate_Concurrent exercises invalidation against concurrent readers
+// under -race; a revocation arrives while requests are in flight, not while the
+// process is idle.
+func Test_Invalidate_Concurrent(t *testing.T) {
+	var minted atomic.Int32
+	cached := ReuseTokenSourceWithSkew(nil, &mintCounter{n: &minted}, DefaultExpirySkew)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if _, err := cached.Token(); err != nil {
+					t.Errorf("Token(): %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				Invalidate(cached)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// mintCounter hands out a distinct token per call so a test can tell a cached
+// token from a freshly minted one.
+type mintCounter struct {
+	n *atomic.Int32
+}
+
+func (m *mintCounter) Token() (*oauth2.Token, error) {
+	i := m.n.Add(1)
+	return &oauth2.Token{
+		AccessToken: fmt.Sprintf("token-%d", i),
+		TokenType:   bearerTokenType,
+		Expiry:      time.Now().Add(time.Hour),
+	}, nil
+}
+
+// Test_ReuseTokenSourceWithSkew_ZeroSkewKeepsOAuth2Timing guards the refresh
+// timing of the skew<=0 path, which now goes through a wrapper that adds
+// Invalidate. oauth2.ReuseTokenSource applies its own ten-second early-expiry
+// delta, so a token expiring inside that window must still be refetched. The
+// wrapper must add invalidation without moving that boundary.
+func Test_ReuseTokenSourceWithSkew_ZeroSkewKeepsOAuth2Timing(t *testing.T) {
+	tests := []struct {
+		name       string
+		expiresIn  time.Duration
+		wantMinted int32
+	}{
+		{"inside oauth2's 10s delta is refetched", 5 * time.Second, 2},
+		{"outside it is served from cache", time.Hour, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var minted atomic.Int32
+			src := &fixedLifetimeSource{n: &minted, lifetime: tt.expiresIn}
+
+			cached := ReuseTokenSourceWithSkew(nil, src, 0)
+			if _, err := cached.Token(); err != nil {
+				t.Fatalf("Token(): %v", err)
+			}
+			if _, err := cached.Token(); err != nil {
+				t.Fatalf("Token() again: %v", err)
+			}
+
+			if got := minted.Load(); got != tt.wantMinted {
+				t.Errorf("minted %d times, want %d", got, tt.wantMinted)
+			}
+		})
+	}
+}
+
+type fixedLifetimeSource struct {
+	n        *atomic.Int32
+	lifetime time.Duration
+}
+
+func (f *fixedLifetimeSource) Token() (*oauth2.Token, error) {
+	i := f.n.Add(1)
+	return &oauth2.Token{
+		AccessToken: fmt.Sprintf("token-%d", i),
+		TokenType:   bearerTokenType,
+		Expiry:      time.Now().Add(f.lifetime),
+	}, nil
+}

@@ -89,6 +89,22 @@ githubauth.NewInstallationTokenSource(installationID, appTokenSource,
 
 Options combine in any order. An unparseable URL (or a nil client passed to `WithHTTPClient`) is reported by the first `Token()` call instead of silently falling back to the public GitHub API.
 
+## Recovering from a revoked token
+
+Expiry is not the only way a token dies. GitHub revokes an installation token when the App is suspended, when its permissions change, on an explicit revocation, and it revokes every token for an installation when the private key is rotated. A cache keyed on expiry cannot see any of that, so it keeps serving the dead credential and every request 401s until the hour is up.
+
+`Invalidate` discards the cached token so the next call mints a fresh one:
+
+```go
+resp, err := client.Do(req)
+if resp.StatusCode == http.StatusUnauthorized {
+	githubauth.Invalidate(installationSource)
+	// retry once
+}
+```
+
+It returns `false` for a source with nothing to discard, such as `NewPersonalAccessTokenSource`. Sources cache independently, so invalidating an installation token source does not touch the application JWT behind it. Any source implementing the exported `Invalidator` interface works.
+
 ## Proactive token refresh
 
 `oauth2.ReuseTokenSource` refreshes a cached token only *after* it expires, so a request that starts just before expiry can reach GitHub with a dead credential and 401. Both constructors instead wrap their sources in `ReuseTokenSourceWithSkew`, refreshing when `time.Until(exp) <= skew` (default `DefaultExpirySkew`, 30s).
