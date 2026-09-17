@@ -141,8 +141,18 @@ func FuzzVerify(f *testing.F) {
 		// Must never panic on arbitrary input.
 		_ = Verify(secret, body, sig)
 
-		// A freshly computed signature must always verify against its inputs.
 		valid := sign(secret, body)
+
+		// An empty secret is refused no matter how well-formed the signature
+		// is, because anyone can compute an HMAC under a zero-length key.
+		if len(secret) == 0 {
+			if !errors.Is(Verify(secret, body, valid), ErrMissingSecret) {
+				t.Fatal("empty secret accepted a self-signed payload")
+			}
+			return
+		}
+
+		// With a real secret, a freshly computed signature must always verify.
 		if err := Verify(secret, body, valid); err != nil {
 			t.Fatalf("self-signed payload failed: %v", err)
 		}
@@ -185,5 +195,60 @@ func TestMiddleware_CustomErrorHandler(t *testing.T) {
 	}
 	if !errors.Is(captured, ErrSignatureMismatch) {
 		t.Fatalf("captured err = %v, want errors.Is(ErrSignatureMismatch)", captured)
+	}
+}
+
+// TestVerify_RejectsEmptySecret proves that an empty or nil secret is refused
+// rather than used as an HMAC key. HMAC accepts a zero-length key happily, so a
+// deployment that wires up Middleware(nil) — a missing env var, a typo'd config
+// key — would verify every delivery against a key an attacker can reproduce,
+// and forged payloads would sail through as authentic.
+func TestVerify_RejectsEmptySecret(t *testing.T) {
+	body := []byte(`{"zen":"Keep it logically awesome."}`)
+
+	tests := []struct {
+		name   string
+		secret []byte
+	}{
+		{"nil secret", nil},
+		{"empty secret", []byte{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A signature an attacker can compute without knowing any secret.
+			forged := sign(tt.secret, body)
+
+			err := Verify(tt.secret, body, forged)
+			if !errors.Is(err, ErrMissingSecret) {
+				t.Fatalf("Verify() with %s err = %v, want errors.Is(ErrMissingSecret)", tt.name, err)
+			}
+		})
+	}
+}
+
+// TestMiddleware_RejectsEmptySecret proves the middleware refuses a forged
+// delivery when it was configured without a secret, instead of passing it to
+// the downstream handler as verified.
+func TestMiddleware_RejectsEmptySecret(t *testing.T) {
+	body := []byte(`{"action":"opened"}`)
+
+	var reached bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set(SignatureHeader, sign(nil, body))
+	rec := httptest.NewRecorder()
+
+	Middleware(nil)(next).ServeHTTP(rec, req)
+
+	if reached {
+		t.Error("downstream handler was reached; a forged delivery was accepted with no secret configured")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }

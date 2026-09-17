@@ -34,6 +34,7 @@ const signaturePrefix = "sha256="
 
 // Sentinel errors returned by Verify. Callers can branch with errors.Is.
 var (
+	ErrMissingSecret          = errors.New("webhook: secret must not be empty")
 	ErrMissingSignature       = errors.New("webhook: missing signature header")
 	ErrInvalidSignatureFormat = errors.New("webhook: invalid signature format")
 	ErrSignatureMismatch      = errors.New("webhook: signature mismatch")
@@ -42,7 +43,16 @@ var (
 // Verify reports whether signature is a valid HMAC-SHA256 of body using secret.
 // signature must be in GitHub's "sha256=<hex>" form, as delivered in the
 // X-Hub-Signature-256 header. Comparison runs in constant time.
+//
+// An empty secret returns ErrMissingSecret: HMAC would otherwise accept the
+// zero-length key and treat forged deliveries as authentic.
 func Verify(secret, body []byte, signature string) error {
+	// HMAC accepts a zero-length key, so an unset secret would verify every
+	// delivery against a key anyone can reproduce. Fail closed instead.
+	if len(secret) == 0 {
+		return ErrMissingSecret
+	}
+
 	if signature == "" {
 		return ErrMissingSignature
 	}
@@ -80,7 +90,8 @@ func WithMaxPayloadSize(n int64) MiddlewareOpt {
 }
 
 // WithErrorHandler overrides how verification failures are reported. The
-// default writes 401 Unauthorized (or 413 for oversized bodies) with no body.
+// default writes 401 Unauthorized (or 413 for oversized bodies) with a short
+// plain-text reason.
 func WithErrorHandler(fn func(http.ResponseWriter, *http.Request, error)) MiddlewareOpt {
 	return func(c *middlewareConfig) { c.onError = fn }
 }
@@ -89,6 +100,10 @@ func WithErrorHandler(fn func(http.ResponseWriter, *http.Request, error)) Middle
 // against secret before invoking next. Failed verifications short-circuit
 // with 401 Unauthorized; bodies larger than the configured cap return 413.
 // The request body is restored for downstream handlers.
+//
+// An empty secret rejects every delivery with ErrMissingSecret rather than
+// verifying against a zero-length HMAC key, so a misconfigured deployment
+// fails closed and surfaces as failed deliveries instead of accepting forgeries.
 func Middleware(secret []byte, opts ...MiddlewareOpt) func(http.Handler) http.Handler {
 	cfg := middlewareConfig{maxPayloadSize: DefaultMaxPayloadSize}
 	for _, o := range opts {
