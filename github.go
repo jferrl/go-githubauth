@@ -18,6 +18,10 @@ const (
 	// defaultBaseURL is the default GitHub API base URL.
 	defaultBaseURL = "https://api.github.com/"
 
+	// maxErrorBodyBytes caps how much of a non-2xx body is read into the error
+	// message, so a misbehaving or hostile server cannot exhaust memory.
+	maxErrorBodyBytes = 64 << 10
+
 	// maxRetrySleep caps sleeps between retries so a misbehaving or hostile
 	// server cannot stall callers indefinitely via Retry-After.
 	maxRetrySleep = 60 * time.Second
@@ -25,10 +29,21 @@ const (
 	// defaultThrottleBackoff is the fallback delay when GitHub returns 429
 	// without any retry hint header.
 	defaultThrottleBackoff = 1 * time.Second
+
+	// secondaryRateLimitBackoff is the fallback delay for a 403 identified as a
+	// rate limit that carries no usable hint. GitHub's guidance for that case is
+	// to wait at least one minute before retrying.
+	secondaryRateLimitBackoff = 60 * time.Second
 )
 
-// ErrRateLimited wraps errors returned when GitHub has throttled a request
-// (HTTP 429 or 403 with rate-limit headers). Callers can branch with errors.Is.
+// ErrRateLimited wraps errors returned when GitHub has throttled a request:
+// any HTTP 429, or a 403 that GitHub identifies as a rate limit rather than a
+// permission failure. A 403 counts when it carries Retry-After, reports an
+// exhausted budget via X-RateLimit-Remaining: 0, or says so in its message.
+//
+// A 403 such as "Resource not accessible by integration" is a permission
+// failure and is NOT wrapped, even though GitHub attaches rate-limit headers
+// to it. Callers can branch with errors.Is.
 var ErrRateLimited = errors.New("github API rate limited")
 
 // InstallationTokenOptions specifies options for creating an installation token.
@@ -154,8 +169,9 @@ func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
 
 // createInstallationToken creates an installation access token for a GitHub App.
 // When retryOnThrottle is enabled, a single retry is performed on 429 or on 403
-// responses that carry Retry-After / x-ratelimit-reset headers. The sleep is
-// capped at maxRetrySleep and honors ctx cancellation.
+// responses that are actually throttled — those carrying Retry-After, or
+// x-ratelimit-remaining: 0. The sleep is capped at maxRetrySleep and honors ctx
+// cancellation.
 //
 // API documentation: https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-an-installation-access-token-for-an-app
 func (c *githubClient) createInstallationToken(ctx context.Context, installationID int64, opts *InstallationTokenOptions) (*InstallationToken, error) {
@@ -223,21 +239,20 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 		return &token, 0, nil
 	}
 
-	bodyResp, _ := io.ReadAll(resp.Body)
-	if delay, ok := c.throttleDelay(resp); ok {
+	bodyResp, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	if delay, ok := c.throttleDelay(resp, bodyResp); ok {
 		return nil, delay, fmt.Errorf("%w: GitHub API returned status %d: %s", ErrRateLimited, resp.StatusCode, string(bodyResp))
 	}
 
 	return nil, 0, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(bodyResp))
 }
 
-// throttleDelay inspects a non-2xx response and reports the retry hint from
-// GitHub's rate-limit headers. The bool is true when the response is considered
-// retryable (429 always, 403 only when a parseable retry header is present).
-// The returned duration is capped at maxRetrySleep. An unparseable header is
-// treated as absent — a malformed hint must not silently flip a terminal 403
-// into a retry.
-func (c *githubClient) throttleDelay(resp *http.Response) (time.Duration, bool) {
+// throttleDelay inspects a non-2xx response and reports the retry hint GitHub
+// supplied. The bool is true when the response is considered retryable: any 429,
+// and a 403 only when it is a rate limit rather than a permission failure. The
+// returned duration is capped at maxRetrySleep. An unparseable header is treated
+// as absent — a malformed hint must not silently flip a terminal 403 into a retry.
+func (c *githubClient) throttleDelay(resp *http.Response, body []byte) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusForbidden {
 		return 0, false
 	}
@@ -246,6 +261,10 @@ func (c *githubClient) throttleDelay(resp *http.Response) (time.Duration, bool) 
 		if d, ok := parseRetryAfter(v, time.Now()); ok {
 			return capDelay(d), true
 		}
+	}
+
+	if resp.StatusCode == http.StatusForbidden && !isRateLimit403(resp, body) {
+		return 0, false
 	}
 
 	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
@@ -258,7 +277,28 @@ func (c *githubClient) throttleDelay(resp *http.Response) (time.Duration, bool) 
 		return defaultThrottleBackoff, true
 	}
 
-	return 0, false
+	// A 403 that reached here is a rate limit with no usable hint.
+	return secondaryRateLimitBackoff, true
+}
+
+// isRateLimit403 reports whether a 403 is a rate limit rather than a permission
+// failure. GitHub attaches X-RateLimit-Limit / X-RateLimit-Remaining /
+// X-RateLimit-Reset to essentially every authenticated response, terminal 403s
+// such as "Resource not accessible by integration" included, so the presence of
+// those headers proves nothing on its own: a permission failure carries a
+// healthy remaining count and a reset epoch up to an hour out.
+//
+// Two things do distinguish one: an exhausted budget, or GitHub saying so in the
+// message. The message matters because a secondary rate limit can arrive with a
+// healthy primary budget and no Retry-After, and treating that as terminal would
+// strip the ErrRateLimited callers branch on.
+func isRateLimit403(resp *http.Response, body []byte) bool {
+	if v := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")); v != "" {
+		if remaining, err := strconv.ParseInt(v, 10, 64); err == nil && remaining <= 0 {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(string(body)), "rate limit")
 }
 
 // parseRetryAfter accepts either integer seconds ("30") or an HTTP-date

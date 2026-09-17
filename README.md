@@ -95,10 +95,12 @@ Options combine in any order. An unparseable URL (or a nil client passed to `Wit
 
 ```go
 appTokenSource, err := githubauth.NewApplicationTokenSource(clientID, privateKey,
-	githubauth.WithApplicationTokenExpiration(1*time.Minute),
-	githubauth.WithExpirySkew(5*time.Second), // effective validity: 55s
+	githubauth.WithApplicationTokenExpiration(5*time.Minute),
+	githubauth.WithExpirySkew(5*time.Second), // effective validity: 3m55s
 )
 ```
+
+Expiration is backdated 60s for clock drift, so effective validity is `expiration - 60s - skew`. Values at or below 90s (the backdate plus `DefaultExpirySkew`) are rejected and fall back to 10 minutes, because below that the cache can never hold the token and every call re-signs.
 
 A zero or negative skew restores exact `oauth2.ReuseTokenSource` behavior. The wrapper is exported as `ReuseTokenSourceWithSkew` for use with any third-party `oauth2.TokenSource`, and is safe for concurrent use.
 

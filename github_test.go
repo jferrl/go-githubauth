@@ -544,11 +544,14 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 func Test_createInstallationToken_XRateLimitReset(t *testing.T) {
 	// x-ratelimit-reset is a Unix-second epoch, so the header value must be
 	// computed at request-time to avoid sub-second truncation that makes the
-	// elapsed-time assertion flaky.
+	// elapsed-time assertion flaky. x-ratelimit-remaining is 0 because that is
+	// what marks a 403 as throttled rather than terminal; see
+	// Test_createInstallationToken_403PermissionNotThrottled.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := attempts.Add(1)
 		if n == 1 {
+			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(3*time.Second).Unix(), 10))
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"message":"rate limited"}`))
@@ -595,7 +598,7 @@ func Test_throttleDelay_CapsAtMaxRetrySleep(t *testing.T) {
 		StatusCode: http.StatusTooManyRequests,
 		Header:     http.Header{"Retry-After": []string{"600"}},
 	}
-	d, ok := c.throttleDelay(resp)
+	d, ok := c.throttleDelay(resp, nil)
 	if !ok {
 		t.Fatalf("throttleDelay ok = false, want true")
 	}
@@ -607,7 +610,7 @@ func Test_throttleDelay_CapsAtMaxRetrySleep(t *testing.T) {
 		StatusCode: http.StatusTooManyRequests,
 		Header:     http.Header{"Retry-After": []string{time.Now().Add(1 * time.Hour).UTC().Format(http.TimeFormat)}},
 	}
-	d, ok = c.throttleDelay(resp)
+	d, ok = c.throttleDelay(resp, nil)
 	if !ok {
 		t.Fatalf("throttleDelay ok = false, want true")
 	}
@@ -679,7 +682,7 @@ func Test_throttleDelay_NonThrottledStatus(t *testing.T) {
 	c := newGitHubClient(&http.Client{})
 	for _, status := range []int{http.StatusOK, http.StatusCreated, http.StatusBadRequest, http.StatusInternalServerError} {
 		resp := &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"5"}}}
-		if d, ok := c.throttleDelay(resp); ok || d != 0 {
+		if d, ok := c.throttleDelay(resp, nil); ok || d != 0 {
 			t.Errorf("status %d: got (%v, %v), want (0, false)", status, d, ok)
 		}
 	}
@@ -827,4 +830,218 @@ func Test_createInstallationToken_TokenFormats(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Test_createInstallationToken_403PermissionNotThrottled pins the distinction
+// between a throttled 403 and a terminal permission 403.
+//
+// GitHub attaches X-RateLimit-Limit / X-RateLimit-Remaining / X-RateLimit-Reset
+// to essentially every authenticated REST response, including terminal failures
+// such as 403 {"message":"Resource not accessible by integration"}. Those carry
+// a healthy X-RateLimit-Remaining and a reset epoch up to an hour out, so the
+// reset header alone must never make a 403 retryable: doing so stalls the caller
+// for up to maxRetrySleep and then reports ErrRateLimited for what is really a
+// permissions problem.
+//
+// A 403 is throttled only when Retry-After is present or X-RateLimit-Remaining
+// is exactly "0". 429 keeps its existing behaviour.
+func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
+	// Computed once here; the server replays it milliseconds later.
+	futureReset := strconv.FormatInt(time.Now().Add(5*time.Second).Unix(), 10)
+	pastReset := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)
+
+	tests := []struct {
+		name          string
+		responses     []throttleResponse
+		wantAttempts  int32
+		wantErr       bool
+		wantRateLimit bool
+		maxElapsed    time.Duration
+	}{
+		{
+			name: "403 permission error with healthy remaining is terminal",
+			responses: []throttleResponse{
+				{
+					status: http.StatusForbidden,
+					headers: map[string]string{
+						"X-RateLimit-Limit":     "5000",
+						"X-RateLimit-Remaining": "4999",
+						"X-RateLimit-Reset":     futureReset,
+					},
+					body: `{"message":"Resource not accessible by integration"}`,
+				},
+			},
+			wantAttempts:  1,
+			wantErr:       true,
+			wantRateLimit: false,
+			maxElapsed:    time.Second,
+		},
+		{
+			name: "403 with exhausted remaining is still throttled",
+			responses: []throttleResponse{
+				{
+					status: http.StatusForbidden,
+					headers: map[string]string{
+						"X-RateLimit-Limit":     "5000",
+						"X-RateLimit-Remaining": "0",
+						"X-RateLimit-Reset":     pastReset,
+					},
+					body: `{"message":"API rate limit exceeded"}`,
+				},
+				{status: http.StatusCreated, writeToken: true},
+			},
+			wantAttempts: 2,
+			wantErr:      false,
+			maxElapsed:   5 * time.Second,
+		},
+		{
+			name: "403 with Retry-After is still throttled",
+			responses: []throttleResponse{
+				{
+					status:  http.StatusForbidden,
+					headers: map[string]string{"Retry-After": "0"},
+					body:    `{"message":"You have exceeded a secondary rate limit"}`,
+				},
+				{status: http.StatusCreated, writeToken: true},
+			},
+			wantAttempts: 2,
+			wantErr:      false,
+			maxElapsed:   5 * time.Second,
+		},
+		{
+			name: "429 without hint headers is still throttled",
+			responses: []throttleResponse{
+				{status: http.StatusTooManyRequests, body: `{"message":"rate limited"}`},
+				{status: http.StatusCreated, writeToken: true},
+			},
+			wantAttempts: 2,
+			wantErr:      false,
+			maxElapsed:   5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			server := httptest.NewServer(throttleHandler(t, tt.responses, &attempts))
+			defer server.Close()
+
+			client := newClientForServer(t, server)
+
+			start := time.Now()
+			_, err := client.createInstallationToken(context.Background(), 12345, nil)
+			elapsed := time.Since(start)
+
+			if got := attempts.Load(); got != tt.wantAttempts {
+				t.Errorf("attempts = %d, want %d", got, tt.wantAttempts)
+			}
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got := errors.Is(err, ErrRateLimited); got != tt.wantRateLimit {
+				t.Errorf("errors.Is(err, ErrRateLimited) = %v, want %v (err = %v)", got, tt.wantRateLimit, err)
+			}
+			if elapsed > tt.maxElapsed {
+				t.Errorf("elapsed = %v, want <= %v", elapsed, tt.maxElapsed)
+			}
+		})
+	}
+}
+
+// Test_throttleDelay_403Classification pins which 403s count as rate limiting.
+// GitHub attaches X-RateLimit-* headers to essentially every authenticated
+// response, so header presence alone proves nothing: a permission failure
+// carries a healthy budget and a reset epoch up to an hour out. What does
+// distinguish a rate limit is an exhausted budget, a Retry-After, or GitHub
+// saying so in the message — the last matters because a secondary rate limit
+// can arrive with a healthy primary budget and no Retry-After.
+func Test_throttleDelay_403Classification(t *testing.T) {
+	future := strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10)
+
+	tests := []struct {
+		name      string
+		headers   map[string]string
+		body      string
+		wantRetry bool
+	}{
+		{
+			name:      "permission failure with healthy budget is terminal",
+			headers:   map[string]string{"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": future},
+			body:      `{"message":"Resource not accessible by integration"}`,
+			wantRetry: false,
+		},
+		{
+			name:      "secondary rate limit with healthy budget and no hint is throttled",
+			headers:   map[string]string{"X-RateLimit-Remaining": "4321", "X-RateLimit-Reset": future},
+			body:      `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`,
+			wantRetry: true,
+		},
+		{
+			name:      "exhausted budget without a reset header is still throttled",
+			headers:   map[string]string{"X-RateLimit-Remaining": "0"},
+			body:      `{"message":"API rate limit exceeded"}`,
+			wantRetry: true,
+		},
+		{
+			name:      "non-canonical zero budget is read numerically",
+			headers:   map[string]string{"X-RateLimit-Remaining": "00", "X-RateLimit-Reset": future},
+			body:      `{"message":"Forbidden"}`,
+			wantRetry: true,
+		},
+		{
+			name:      "no rate-limit headers at all is terminal",
+			headers:   map[string]string{},
+			body:      `{"message":"Resource not accessible by integration"}`,
+			wantRetry: false,
+		},
+		{
+			name:      "Retry-After wins regardless of budget or message",
+			headers:   map[string]string{"Retry-After": "1", "X-RateLimit-Remaining": "4999"},
+			body:      `{"message":"Resource not accessible by integration"}`,
+			wantRetry: true,
+		},
+	}
+
+	c := newGitHubClient(&http.Client{})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}}
+			for k, v := range tt.headers {
+				resp.Header.Set(k, v)
+			}
+
+			delay, retry := c.throttleDelay(resp, []byte(tt.body))
+			if retry != tt.wantRetry {
+				t.Fatalf("throttleDelay() retryable = %v, want %v", retry, tt.wantRetry)
+			}
+			if retry && delay <= 0 {
+				t.Errorf("throttleDelay() delay = %v, want a positive wait when retryable", delay)
+			}
+			if !retry && delay != 0 {
+				t.Errorf("throttleDelay() delay = %v, want 0 when terminal", delay)
+			}
+		})
+	}
+}
+
+// Test_throttleDelay_HintlessRateLimit403WaitsAMinute pins the fallback for a
+// 403 identified as a rate limit that carries no usable hint. GitHub's guidance
+// for that case is to wait at least a minute, not the 1s used for a bare 429.
+func Test_throttleDelay_HintlessRateLimit403WaitsAMinute(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}}
+	resp.Header.Set("X-RateLimit-Remaining", "0")
+
+	delay, retry := c403(t).throttleDelay(resp, []byte(`{"message":"API rate limit exceeded"}`))
+	if !retry {
+		t.Fatal("throttleDelay() retryable = false, want true")
+	}
+	if delay != secondaryRateLimitBackoff {
+		t.Errorf("delay = %v, want %v", delay, secondaryRateLimitBackoff)
+	}
+}
+
+func c403(t *testing.T) *githubClient {
+	t.Helper()
+	return newGitHubClient(&http.Client{})
 }

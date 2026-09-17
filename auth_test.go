@@ -1323,3 +1323,315 @@ func Test_NewInstallationTokenSource_RejectsZeroID(t *testing.T) {
 		})
 	}
 }
+
+// namedAppID and namedClientID model the idiomatic Go habit of giving an
+// identifier its own defined type. The Identifier constraint is "~int64 | ~string",
+// whose tildes promise both are accepted.
+type namedAppID int64
+
+type namedClientID string
+
+func Test_resolveIssuer_NamedIdentifierTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		resolve    func() (string, error)
+		want       string
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{
+			name:    "named int64 identifier",
+			resolve: func() (string, error) { return resolveIssuer(namedAppID(123)) },
+			want:    "123",
+		},
+		{
+			name:    "named string identifier",
+			resolve: func() (string, error) { return resolveIssuer(namedClientID("Iv1.abc123")) },
+			want:    "Iv1.abc123",
+		},
+		{
+			name:    "plain int64 identifier",
+			resolve: func() (string, error) { return resolveIssuer(int64(456)) },
+			want:    "456",
+		},
+		{
+			name:    "plain string identifier",
+			resolve: func() (string, error) { return resolveIssuer("Iv23.def456") },
+			want:    "Iv23.def456",
+		},
+		{
+			name:       "named int64 zero value is rejected",
+			resolve:    func() (string, error) { return resolveIssuer(namedAppID(0)) },
+			wantErr:    true,
+			wantErrMsg: "application identifier is required",
+		},
+		{
+			name:       "named string empty value is rejected",
+			resolve:    func() (string, error) { return resolveIssuer(namedClientID("")) },
+			wantErr:    true,
+			wantErrMsg: "application identifier is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.resolve()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("resolveIssuer() error = nil, want %q", tt.wantErrMsg)
+				}
+				if err.Error() != tt.wantErrMsg {
+					t.Fatalf("resolveIssuer() error = %q, want %q", err.Error(), tt.wantErrMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveIssuer() unexpected error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("resolveIssuer() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_NewApplicationTokenSource_NamedIdentifierTypes(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(rsaKey),
+	})
+
+	cases := []struct {
+		name       string
+		newSource  func() (string, error)
+		wantIssuer string
+	}{
+		{
+			name: "named int64 through pem constructor",
+			newSource: func() (string, error) {
+				ts, err := NewApplicationTokenSource(namedAppID(42), pemBytes)
+				if err != nil {
+					return "", err
+				}
+				tok, err := ts.Token()
+				if err != nil {
+					return "", err
+				}
+				return issuerFromJWT(tok.AccessToken)
+			},
+			wantIssuer: "42",
+		},
+		{
+			name: "named string through signer constructor",
+			newSource: func() (string, error) {
+				ts, err := NewApplicationTokenSourceFromSigner(namedClientID("Iv1.abc123"), rsaKey)
+				if err != nil {
+					return "", err
+				}
+				tok, err := ts.Token()
+				if err != nil {
+					return "", err
+				}
+				return issuerFromJWT(tok.AccessToken)
+			},
+			wantIssuer: "Iv1.abc123",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.newSource()
+			if err != nil {
+				t.Fatalf("unexpected error = %v", err)
+			}
+			if got != tc.wantIssuer {
+				t.Errorf("iss = %q, want %q", got, tc.wantIssuer)
+			}
+		})
+	}
+}
+
+// issuerFromJWT extracts the iss claim from a signed JWT without verifying it.
+func issuerFromJWT(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("malformed JWT: %d parts", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", err
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", err
+	}
+	return claims.Iss, nil
+}
+
+// Test_applicationTokenSource_ShortExpirationIsNotAlreadyExpired pins the
+// contract that a configured application token expiration never yields a dead
+// JWT.
+//
+// Token() backdates issuance by 60s for clock-drift protection
+// (exp = now - 60s + expiration), so any expiration <= 60s mints a token whose
+// exp is already in the past (or exactly now). WithApplicationTokenExpiration
+// clamps only the upper bound, so those values slip through and the caller gets
+// a credential GitHub answers with 401.
+//
+// Assertions are on the observable oauth2.Token.Expiry and the signed exp
+// claim, not on internal fields, so the test holds whether the lower bound is
+// enforced in the option or in Token().
+func Test_applicationTokenSource_ShortExpirationIsNotAlreadyExpired(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		// expiration is the value handed to WithApplicationTokenExpiration.
+		expiration time.Duration
+		// wantEffective is the expiration the source must actually apply:
+		// values at or below minApplicationTokenExpiration (the 60s backdate
+		// plus DefaultExpirySkew) are invalid and fall back to
+		// DefaultApplicationTokenExpiration, like every other invalid value the
+		// option already rejects.
+		wantEffective time.Duration
+	}{
+		{
+			name:          "30s is shorter than the clock-drift backdating",
+			expiration:    30 * time.Second,
+			wantEffective: DefaultApplicationTokenExpiration,
+		},
+		{
+			name:          "60s exactly cancels the clock-drift backdating",
+			expiration:    60 * time.Second,
+			wantEffective: DefaultApplicationTokenExpiration,
+		},
+		{
+			// Clears the backdate but not the refresh skew on top of it, so the
+			// cache could never hold the token and every call would re-sign.
+			name:          "90s is exactly the bound and is rejected",
+			expiration:    90 * time.Second,
+			wantEffective: DefaultApplicationTokenExpiration,
+		},
+		{
+			name:          "91s is the smallest honoured value",
+			expiration:    91 * time.Second,
+			wantEffective: 91 * time.Second,
+		},
+		{
+			name:          "5m is honoured",
+			expiration:    5 * time.Minute,
+			wantEffective: 5 * time.Minute,
+		},
+		{
+			name:          "10m is honoured",
+			expiration:    DefaultApplicationTokenExpiration,
+			wantEffective: DefaultApplicationTokenExpiration,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := time.Now()
+
+			ts, err := NewApplicationTokenSourceFromSigner(int64(42), rsaKey, WithApplicationTokenExpiration(tt.expiration))
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+
+			tok, err := ts.Token()
+			if err != nil {
+				t.Fatalf("Token(): %v", err)
+			}
+
+			// The token must be usable at all: a caller asking for a short
+			// expiration must not silently receive a dead credential.
+			if validFor := time.Until(tok.Expiry); validFor <= 0 {
+				t.Errorf("Expiry %v is not in the future (valid for %v); token is dead on arrival", tok.Expiry, validFor)
+			}
+
+			// exp = issuance (now - 60s) + effective expiration. Tolerance
+			// absorbs execution time and the whole-second truncation of
+			// NumericDate.
+			want := before.Add(-60 * time.Second).Add(tt.wantEffective)
+			if diff := tok.Expiry.Sub(want); diff < -2*time.Second || diff > 2*time.Second {
+				t.Errorf("Expiry = %v, want ~%v (±2s): effective expiration is not %v", tok.Expiry, want, tt.wantEffective)
+			}
+
+			// The signed JWT itself must verify and must not be expired: this
+			// is what GitHub sees.
+			parsed, err := jwt.ParseWithClaims(tok.AccessToken, &jwt.RegisteredClaims{}, func(_ *jwt.Token) (any, error) {
+				return &rsaKey.PublicKey, nil
+			})
+			if err != nil {
+				t.Fatalf("parse minted JWT: %v", err)
+			}
+
+			claims, ok := parsed.Claims.(*jwt.RegisteredClaims)
+			if !ok {
+				t.Fatalf("claims type = %T, want *jwt.RegisteredClaims", parsed.Claims)
+			}
+			if claims.ExpiresAt == nil {
+				t.Fatal("exp claim is missing")
+			}
+			if !claims.ExpiresAt.After(time.Now()) {
+				t.Errorf("exp claim %v is not in the future; GitHub rejects this JWT with 401", claims.ExpiresAt.Time)
+			}
+		})
+	}
+}
+
+// countingSigner records how many times the private key was used to sign.
+type countingSigner struct {
+	crypto.Signer
+	signs atomic.Int32
+}
+
+func (c *countingSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	c.signs.Add(1)
+	return c.Signer.Sign(rand, digest, opts)
+}
+
+// Test_WithApplicationTokenExpiration_TokenIsCacheable proves the accepted
+// lower bound leaves a token the cache can actually hold. An expiration above
+// the 60s backdate but within DefaultExpirySkew of it yields a token whose
+// remaining life is at or below the skew, so ReuseTokenSourceWithSkew treats it
+// as stale immediately and re-signs on every call — a remote round trip for the
+// KMS, HSM and Vault signers NewApplicationTokenSourceFromSigner exists to serve.
+func Test_WithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, exp := range []time.Duration{61 * time.Second, 90 * time.Second, 5 * time.Minute} {
+		t.Run(exp.String(), func(t *testing.T) {
+			signer := &countingSigner{Signer: rsaKey}
+
+			ts, err := NewApplicationTokenSourceFromSigner(int64(42), signer,
+				WithApplicationTokenExpiration(exp))
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+
+			const calls = 5
+			for i := range calls {
+				if _, err := ts.Token(); err != nil {
+					t.Fatalf("Token() #%d: %v", i+1, err)
+				}
+			}
+
+			if got := signer.signs.Load(); got != 1 {
+				t.Errorf("signed %d times across %d calls, want 1; the token must survive in the cache", got, calls)
+			}
+		})
+	}
+}
