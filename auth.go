@@ -284,7 +284,10 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 		// only the Transport is swapped to inject GitHub App authentication.
 		authClient := *client
 		authClient.Transport = &oauth2.Transport{
-			Source: i.src,
+			// Reuse the JWT across requests exactly as the default transport
+			// does; otherwise supplying a custom client silently re-signs on
+			// every installation-token request.
+			Source: oauth2.ReuseTokenSource(nil, i.src),
 			Base:   client.Transport,
 		}
 
@@ -400,6 +403,9 @@ func (t *installationTokenSource) setConfigErr(err error) {
 // NewInstallationTokenSource creates a GitHub App installation token source.
 // Requires installation ID and a GitHub App JWT token source for authentication.
 //
+// A non-positive installation ID is a configuration error, reported by the
+// first call to Token() rather than sent to GitHub as a request that can only 404.
+//
 // The returned token source is wrapped in ReuseTokenSourceWithSkew so cached
 // tokens are refreshed DefaultExpirySkew before their expiry, eliminating
 // in-flight 401s when a request starts close to exp and reaches GitHub after.
@@ -421,6 +427,12 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 		src:    src,
 		client: newGitHubClient(httpClient),
 		skew:   DefaultExpirySkew,
+	}
+
+	// A non-positive ID can only produce /app/installations/0/access_tokens and
+	// a 404. Fail like a misconfiguration rather than like a GitHub outage.
+	if id <= 0 {
+		i.setConfigErr(errors.New("installation identifier is required"))
 	}
 
 	for _, opt := range opts {

@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1230,6 +1231,94 @@ func TestWithExpirySkew_Wiring(t *testing.T) {
 			_, isSkew := ts.(*reuseTokenSourceWithSkew)
 			if isSkew != tt.wantSkew {
 				t.Errorf("token source is *reuseTokenSourceWithSkew = %v, want %v (type=%T)", isSkew, tt.wantSkew, ts)
+			}
+		})
+	}
+}
+
+// countingTokenSource records how many times the application JWT was minted.
+type countingTokenSource struct {
+	calls atomic.Int32
+}
+
+func (c *countingTokenSource) Token() (*oauth2.Token, error) {
+	c.calls.Add(1)
+	return &oauth2.Token{
+		AccessToken: "app-jwt",
+		TokenType:   bearerTokenType,
+		Expiry:      time.Now().Add(time.Hour),
+	}, nil
+}
+
+// Test_WithHTTPClient_CachesApplicationToken proves WithHTTPClient caches the
+// application JWT the same way the default transport does. NewInstallationTokenSource
+// wraps the source in oauth2.ReuseTokenSource, but WithHTTPClient wires the raw
+// source, so supplying a custom client silently re-signs a JWT on every
+// installation-token request.
+func Test_WithHTTPClient_CachesApplicationToken(t *testing.T) {
+	src := &countingTokenSource{}
+
+	// expires_at inside the skew window, so the installation-token cache
+	// refetches on every call and each one reaches the transport.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      "ghs_installation",
+			"expires_at": time.Now().Add(time.Second).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer server.Close()
+
+	ts := NewInstallationTokenSource(42, src,
+		WithBaseURL(server.URL),
+		WithHTTPClient(&http.Client{}),
+	)
+
+	const fetches = 3
+	for i := range fetches {
+		if _, err := ts.Token(); err != nil {
+			t.Fatalf("Token() #%d err = %v", i+1, err)
+		}
+	}
+
+	if got := src.calls.Load(); got != 1 {
+		t.Errorf("application token source consulted %d times across %d fetches, want 1; "+
+			"WithHTTPClient must reuse the JWT like the default transport", got, fetches)
+	}
+}
+
+// Test_NewInstallationTokenSource_RejectsZeroID proves a zero installation ID is
+// refused as a configuration error instead of being sent to GitHub as
+// /app/installations/0/access_tokens, which can only 404. A zero App ID is
+// already rejected at construction; this is the same mistake one layer down.
+func Test_NewInstallationTokenSource_RejectsZeroID(t *testing.T) {
+	var hits atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer server.Close()
+
+	for _, id := range []int64{0, -1} {
+		t.Run(fmt.Sprintf("id=%d", id), func(t *testing.T) {
+			hits.Store(0)
+
+			ts := NewInstallationTokenSource(id, oauth2StaticSource{accessToken: "jwt"},
+				WithBaseURL(server.URL),
+			)
+
+			_, err := ts.Token()
+			if err == nil {
+				t.Fatalf("Token() err = nil, want a configuration error for installation ID %d", id)
+			}
+			if got := hits.Load(); got != 0 {
+				t.Errorf("server received %d request(s), want 0; installation ID %d must fail before any network call", got, id)
+			}
+			if !strings.Contains(err.Error(), "installation") {
+				t.Errorf("err = %q, want it to name the installation identifier", err)
 			}
 		})
 	}

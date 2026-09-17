@@ -299,25 +299,12 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 			if tt.wantErr && tt.errorSubstring != "" {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.errorSubstring)
-				} else if !contains(err.Error(), tt.errorSubstring) {
+				} else if !strings.Contains(err.Error(), tt.errorSubstring) {
 					t.Errorf("expected error containing %q, got %q", tt.errorSubstring, err.Error())
 				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || (len(s) > 0 && len(substr) > 0 && hasSubstring(s, substr)))
-}
-
-func hasSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func Test_Ptr(t *testing.T) {
