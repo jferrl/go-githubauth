@@ -36,6 +36,40 @@ const (
 	secondaryRateLimitBackoff = 60 * time.Second
 )
 
+// RateLimitError is the concrete error returned when GitHub throttles a
+// request. It carries the wait the client computed from GitHub's own hints, so
+// a caller running its own backoff does not have to re-parse the headers the
+// client already read:
+//
+//	var rle *githubauth.RateLimitError
+//	if errors.As(err, &rle) {
+//		time.Sleep(rle.RetryAfter)
+//	}
+//
+// It unwraps to ErrRateLimited, so errors.Is(err, ErrRateLimited) keeps working.
+type RateLimitError struct {
+	// StatusCode is the HTTP status GitHub returned, 429 or 403.
+	StatusCode int
+
+	// RetryAfter is how long to wait before retrying, taken from Retry-After or
+	// X-RateLimit-Reset and capped at maxRetrySleep. It falls back to a
+	// documented default when GitHub sends no usable hint. It is zero when
+	// GitHub says to retry immediately, or when the reset instant has already
+	// passed, so callers must treat zero as "retry now" rather than "no hint".
+	RetryAfter time.Duration
+
+	// Message is the response body, truncated to maxErrorBodyBytes.
+	Message string
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("%s: GitHub API returned status %d: %s", ErrRateLimited.Error(), e.StatusCode, e.Message)
+}
+
+// Unwrap reports ErrRateLimited so callers can branch with errors.Is without
+// knowing about this type.
+func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
+
 // ErrRateLimited wraps errors returned when GitHub has throttled a request:
 // any HTTP 429, or a 403 that GitHub identifies as a rate limit rather than a
 // permission failure. A 403 counts when it carries Retry-After, reports an
@@ -189,27 +223,27 @@ func (c *githubClient) createInstallationToken(ctx context.Context, installation
 		}
 	}
 
-	token, delay, err := c.doCreateInstallationToken(ctx, u.String(), bodyBytes)
+	token, err := c.doCreateInstallationToken(ctx, u.String(), bodyBytes)
 	if err == nil {
 		return token, nil
 	}
-	if !c.retryOnThrottle || !errors.Is(err, ErrRateLimited) {
+
+	var throttled *RateLimitError
+	if !c.retryOnThrottle || !errors.As(err, &throttled) {
 		return nil, err
 	}
 
-	if sleepErr := sleepCtx(ctx, delay); sleepErr != nil {
+	if sleepErr := sleepCtx(ctx, throttled.RetryAfter); sleepErr != nil {
 		return nil, sleepErr
 	}
 
-	token, _, err = c.doCreateInstallationToken(ctx, u.String(), bodyBytes)
-	return token, err
+	return c.doCreateInstallationToken(ctx, u.String(), bodyBytes)
 }
 
-// doCreateInstallationToken performs a single POST attempt. On a throttled
-// response it returns the desired retry delay in addition to the error so the
-// caller can decide whether to retry. A zero delay indicates the error is not
-// retryable.
-func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL string, bodyBytes []byte) (*InstallationToken, time.Duration, error) {
+// doCreateInstallationToken performs a single POST attempt. A throttled
+// response yields a *RateLimitError carrying the retry delay, so the caller can
+// decide whether to retry without re-reading the response.
+func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL string, bodyBytes []byte) (*InstallationToken, error) {
 	var body io.Reader
 	if bodyBytes != nil {
 		body = bytes.NewReader(bodyBytes)
@@ -217,7 +251,7 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -225,7 +259,7 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to execute request: %w", err)
+		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -234,17 +268,21 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 		var token InstallationToken
 		if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-			return nil, 0, fmt.Errorf("failed to decode response: %w", err)
+			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
-		return &token, 0, nil
+		return &token, nil
 	}
 
 	bodyResp, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if delay, ok := c.throttleDelay(resp, bodyResp); ok {
-		return nil, delay, fmt.Errorf("%w: GitHub API returned status %d: %s", ErrRateLimited, resp.StatusCode, string(bodyResp))
+		return nil, &RateLimitError{
+			StatusCode: resp.StatusCode,
+			RetryAfter: delay,
+			Message:    string(bodyResp),
+		}
 	}
 
-	return nil, 0, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(bodyResp))
+	return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(bodyResp))
 }
 
 // throttleDelay inspects a non-2xx response and reports the retry hint GitHub

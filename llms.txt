@@ -17,6 +17,7 @@ Core API (package `githubauth`):
 
 - `NewApplicationTokenSource(id, privateKeyPEM, opts...) (oauth2.TokenSource, error)` — App JWT source; `id` is a string Client ID or int64 App ID. Options: `WithApplicationTokenExpiration(d)` (>90s, max 10m; outside that range falls back to 10m), `WithExpirySkew(d)`.
 - `NewApplicationTokenSourceFromSigner(id, signer crypto.Signer, opts...) (oauth2.TokenSource, error)` — App JWT source backed by an external RSA signer (KMS/HSM/Vault/ssh-agent).
+- `RateLimitError{StatusCode, RetryAfter, Message}` — concrete error for a throttled request; extract with `errors.As`. Unwraps to `ErrRateLimited`, so `errors.Is` keeps working. A 403 permission failure matches neither.
 - `NewInstallationTokenSource(installationID int64, appSource oauth2.TokenSource, opts...) oauth2.TokenSource` — exchanges the App JWT for an installation token. Options: `WithEnterpriseURL(url)` (GHES, appends /api/v3/), `WithBaseURL(url)` (verbatim; GHEC data residency or httptest), `WithHTTPClient(c)`, `WithRetryOnThrottle(bool)`, `WithInstallationExpirySkew(d)`, `WithInstallationTokenOptions(o)`, `WithContext(ctx)`.
 - `NewPersonalAccessTokenSource(token string) oauth2.TokenSource` — classic (`ghp_...`) or fine-grained (`github_pat_...`) PATs.
 - `ReuseTokenSourceWithSkew(t, src, skew) oauth2.TokenSource` — caching wrapper that refreshes `skew` before expiry (both constructors apply it with a 30s default, eliminating in-flight 401s near expiry).

@@ -1045,3 +1045,147 @@ func c403(t *testing.T) *githubClient {
 	t.Helper()
 	return newGitHubClient(&http.Client{})
 }
+
+// Test_RateLimitError_CarriesRetryHint covers the reason the type exists: a
+// caller running its own backoff can read the wait the client already computed
+// from GitHub's headers, instead of re-parsing the response it never sees.
+func Test_RateLimitError_CarriesRetryHint(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         int
+		headers        map[string]string
+		body           string
+		wantRetryAfter time.Duration
+	}{
+		{
+			name:           "Retry-After drives the wait",
+			status:         http.StatusTooManyRequests,
+			headers:        map[string]string{"Retry-After": "7"},
+			body:           `{"message":"Too Many Requests"}`,
+			wantRetryAfter: 7 * time.Second,
+		},
+		{
+			name:           "a bare 429 falls back to the default backoff",
+			status:         http.StatusTooManyRequests,
+			headers:        map[string]string{},
+			body:           `{"message":"Too Many Requests"}`,
+			wantRetryAfter: defaultThrottleBackoff,
+		},
+		{
+			name:           "a hintless rate-limit 403 falls back to a minute",
+			status:         http.StatusForbidden,
+			headers:        map[string]string{"X-RateLimit-Remaining": "0"},
+			body:           `{"message":"API rate limit exceeded"}`,
+			wantRetryAfter: secondaryRateLimitBackoff,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for k, v := range tt.headers {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			c := newClientForServer(t, server)
+			c.retryOnThrottle = false // one attempt, so the first error surfaces
+
+			_, err := c.createInstallationToken(context.Background(), 42, nil)
+			if err == nil {
+				t.Fatal("createInstallationToken() err = nil, want a rate-limit error")
+			}
+
+			var rle *RateLimitError
+			if !errors.As(err, &rle) {
+				t.Fatalf("errors.As(*RateLimitError) = false for %T: %v", err, err)
+			}
+			if rle.StatusCode != tt.status {
+				t.Errorf("StatusCode = %d, want %d", rle.StatusCode, tt.status)
+			}
+			if rle.RetryAfter != tt.wantRetryAfter {
+				t.Errorf("RetryAfter = %v, want %v", rle.RetryAfter, tt.wantRetryAfter)
+			}
+			if rle.Message != tt.body {
+				t.Errorf("Message = %q, want %q", rle.Message, tt.body)
+			}
+
+			// The sentinel remains the documented way to branch.
+			if !errors.Is(err, ErrRateLimited) {
+				t.Error("errors.Is(err, ErrRateLimited) = false; the sentinel contract is broken")
+			}
+		})
+	}
+}
+
+// Test_RateLimitError_MessageFormat pins the rendered message. Callers log and
+// match on it, so introducing the type must not reword it.
+func Test_RateLimitError_MessageFormat(t *testing.T) {
+	err := &RateLimitError{
+		StatusCode: http.StatusForbidden,
+		RetryAfter: time.Second,
+		Message:    `{"message":"API rate limit exceeded"}`,
+	}
+
+	want := `github API rate limited: GitHub API returned status 403: {"message":"API rate limit exceeded"}`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() =\n  %q\nwant\n  %q", got, want)
+	}
+
+	if !errors.Is(err, ErrRateLimited) {
+		t.Error("errors.Is(err, ErrRateLimited) = false")
+	}
+}
+
+// Test_RateLimitError_NotReturnedForTerminalFailures guards the boundary: a
+// permission failure or a plain 404 must not be surfaced as rate limiting.
+func Test_RateLimitError_NotReturnedForTerminalFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		headers map[string]string
+		body    string
+	}{
+		{
+			name:    "permission failure with healthy budget",
+			status:  http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "4999"},
+			body:    `{"message":"Resource not accessible by integration"}`,
+		},
+		{
+			name:    "not found",
+			status:  http.StatusNotFound,
+			headers: map[string]string{},
+			body:    `{"message":"Not Found"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for k, v := range tt.headers {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			_, err := newClientForServer(t, server).createInstallationToken(context.Background(), 42, nil)
+			if err == nil {
+				t.Fatal("createInstallationToken() err = nil, want an error")
+			}
+
+			var rle *RateLimitError
+			if errors.As(err, &rle) {
+				t.Errorf("errors.As(*RateLimitError) = true for a terminal %d: %v", tt.status, err)
+			}
+			if errors.Is(err, ErrRateLimited) {
+				t.Errorf("errors.Is(err, ErrRateLimited) = true for a terminal %d", tt.status)
+			}
+		})
+	}
+}
