@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Notes
+
+#### GitHub stateless installation tokens: no action required
+
+GitHub is replacing the short opaque installation token with a `ghs_`-prefixed JWT of
+about 520 characters
+([announcement](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/)).
+This library is unaffected. It copies the token string from the API response into
+`oauth2.Token.AccessToken` and never parses, measures or validates it. Expiry is read
+from the response's `expires_at` field, so proactive refresh is unchanged. Both formats
+are covered by tests.
+
+GitHub Enterprise Server is out of scope. Enterprise Cloud and Data Residency endpoints,
+reached with `WithBaseURL`, are in scope. Actions `GITHUB_TOKEN` is included in the
+rollout.
+
+To force a format while validating your own code, set the temporary
+`X-GitHub-Stateless-S2S-Token` header (`enabled` or `disabled`) through a custom
+transport:
+
+```go
+type statelessRT struct{ base http.RoundTripper }
+
+func (s statelessRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-GitHub-Stateless-S2S-Token", "enabled")
+	return s.base.RoundTrip(r)
+}
+
+src := githubauth.NewInstallationTokenSource(installationID, appSource,
+	githubauth.WithHTTPClient(&http.Client{Transport: statelessRT{base: http.DefaultTransport}}),
+)
+```
+
+GitHub ignores any other value, so confirm what you received by counting the dots after
+`ghs_`: two means stateless, none means the classic form. Remove the header once you are
+done. It will stop being respected at a future deprecation point.
+
+### Tests
+
+- Added `Test_createInstallationToken_TokenFormats`, covering verbatim passthrough of both
+  the stateless (520-character, two-dot) and classic opaque token formats, and confirming
+  expiry is sourced from `expires_at`
+
 ## [v1.5.1] - 2026-02-09
 
 ### Fixed

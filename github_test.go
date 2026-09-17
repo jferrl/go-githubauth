@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -761,4 +762,82 @@ func (s oauth2StaticSource) Token() (*oauth2.Token, error) {
 		TokenType:   "Bearer",
 		Expiry:      time.Now().Add(time.Hour),
 	}, nil
+}
+
+// Test_createInstallationToken_TokenFormats pins the contract that the
+// installation token is carried through verbatim as an opaque string. GitHub is
+// migrating installation tokens to a stateless "ghs_"-prefixed JWT that is much
+// longer (~520 characters) and contains two dots, alongside the classic short
+// opaque form. Neither is parsed, validated, or length-checked by this package,
+// and this test exists to keep it that way.
+//
+// See https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/
+func Test_createInstallationToken_TokenFormats(t *testing.T) {
+	// A stateless token: "ghs_" + three JWT segments, 520 characters total.
+	statelessToken := "ghs_" + strings.Repeat("a", 171) + "." + strings.Repeat("b", 171) + "." + strings.Repeat("c", 172)
+
+	tests := []struct {
+		name     string
+		token    string
+		wantLen  int
+		wantDots int
+	}{
+		{
+			name:     "stateless JWT format",
+			token:    statelessToken,
+			wantLen:  520,
+			wantDots: 2,
+		},
+		{
+			name:     "stateful opaque format",
+			token:    "ghs_16C7e42F292c6912E7710c838347Ae178B4a",
+			wantLen:  40,
+			wantDots: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Guard the fixtures themselves so a typo cannot weaken the test.
+			if len(tt.token) != tt.wantLen {
+				t.Fatalf("fixture length = %d, want %d", len(tt.token), tt.wantLen)
+			}
+			if got := strings.Count(tt.token, "."); got != tt.wantDots {
+				t.Fatalf("fixture dots = %d, want %d", got, tt.wantDots)
+			}
+
+			expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"token":      tt.token,
+					"expires_at": expiresAt.Format(time.RFC3339),
+				})
+			}))
+			defer server.Close()
+
+			ts := NewInstallationTokenSource(42, oauth2StaticSource{accessToken: "jwt"},
+				WithBaseURL(server.URL),
+			)
+
+			tok, err := ts.Token()
+			if err != nil {
+				t.Fatalf("Token() err = %v", err)
+			}
+
+			if tok.AccessToken != tt.token {
+				t.Errorf("AccessToken = %q (len %d), want %q (len %d)",
+					tok.AccessToken, len(tok.AccessToken), tt.token, len(tt.token))
+			}
+
+			// Expiry must come from the expires_at field, never from the token
+			// body — a stateless token is a JWT with its own exp claim, which
+			// this package deliberately does not read.
+			if !tok.Expiry.Equal(expiresAt) {
+				t.Errorf("Expiry = %v, want %v", tok.Expiry, expiresAt)
+			}
+		})
+	}
 }
