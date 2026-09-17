@@ -13,7 +13,7 @@ GitHub authentication for Go, exposed as standard [`oauth2.TokenSource`](https:/
 go get github.com/jferrl/go-githubauth
 ```
 
-Requires Go 1.25+.
+Requires Go 1.26+.
 
 ## Quick start
 
