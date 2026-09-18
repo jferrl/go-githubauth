@@ -1236,6 +1236,142 @@ func TestWithExpirySkew_Wiring(t *testing.T) {
 	}
 }
 
+// Test_WithInstallationExpirySkew_Wiring mirrors TestWithExpirySkew_Wiring one
+// layer down: the option must select the early-refresh wrapper for a positive
+// skew and fall back to oauth2.ReuseTokenSource for a non-positive one.
+func Test_WithInstallationExpirySkew_Wiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     []InstallationTokenSourceOpt
+		wantSkew bool // true → *reuseTokenSourceWithSkew, false → delegated
+	}{
+		{
+			name:     "default skew uses wrapper",
+			opts:     nil,
+			wantSkew: true,
+		},
+		{
+			name:     "explicit positive skew uses wrapper",
+			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(5 * time.Minute)},
+			wantSkew: true,
+		},
+		{
+			name:     "zero skew delegates to oauth2.ReuseTokenSource",
+			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(0)},
+			wantSkew: false,
+		},
+		{
+			name:     "negative skew delegates to oauth2.ReuseTokenSource",
+			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(-1 * time.Second)},
+			wantSkew: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := NewInstallationTokenSource(42, &countingTokenSource{}, tt.opts...)
+
+			_, isSkew := ts.(*reuseTokenSourceWithSkew)
+			if isSkew != tt.wantSkew {
+				t.Errorf("token source is *reuseTokenSourceWithSkew = %v, want %v (type=%T)", isSkew, tt.wantSkew, ts)
+			}
+		})
+	}
+}
+
+// Test_WithInstallationExpirySkew_AppliesToCache proves the configured window is
+// the one the cache actually refreshes on, not just the branch it selects. The
+// installation token expires in 2s and the skew is 10s, so every Token() lands
+// inside the window and must refetch.
+func Test_WithInstallationExpirySkew_AppliesToCache(t *testing.T) {
+	t.Parallel()
+
+	var minted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := minted.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      fmt.Sprintf("ghs_installation_%d", n),
+			"expires_at": time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer server.Close()
+
+	ts := NewInstallationTokenSource(42, &countingTokenSource{},
+		WithBaseURL(server.URL),
+		WithInstallationExpirySkew(10*time.Second),
+	)
+
+	const fetches = 3
+	var last string
+	for i := range fetches {
+		tok, err := ts.Token()
+		if err != nil {
+			t.Fatalf("Token() #%d err = %v", i+1, err)
+		}
+		if tok.AccessToken == last {
+			t.Errorf("Token() #%d returned cached %q, want a refetch inside the skew window", i+1, tok.AccessToken)
+		}
+		last = tok.AccessToken
+	}
+
+	if got := minted.Load(); got != fetches {
+		t.Errorf("installation tokens minted = %d, want %d; a 2s expiry is inside the 10s skew window", got, fetches)
+	}
+}
+
+// zeroExpiryTokenSource mints tokens that never expire, the shape
+// NewPersonalAccessTokenSource returns.
+type zeroExpiryTokenSource struct {
+	calls atomic.Int32
+}
+
+func (z *zeroExpiryTokenSource) Token() (*oauth2.Token, error) {
+	return &oauth2.Token{
+		AccessToken: fmt.Sprintf("pat_%d", z.calls.Add(1)),
+		TokenType:   bearerTokenType,
+	}, nil
+}
+
+// Test_ReuseTokenSourceWithSkew_ZeroExpiry proves a token with no expiry is
+// cached indefinitely. The skew is a comparison against exp, so with no exp
+// there is nothing to refresh early against: treating the zero time as "already
+// expired" would re-mint on every single call.
+func Test_ReuseTokenSourceWithSkew_ZeroExpiry(t *testing.T) {
+	t.Parallel()
+
+	src := &zeroExpiryTokenSource{}
+	ts := ReuseTokenSourceWithSkew(nil, src, time.Hour)
+
+	first, err := ts.Token()
+	if err != nil {
+		t.Fatalf("first Token() err = %v", err)
+	}
+	if first.Expiry != (time.Time{}) {
+		t.Fatalf("Expiry = %v, want the zero time", first.Expiry)
+	}
+
+	const calls = 5
+	for i := 1; i < calls; i++ {
+		tok, err := ts.Token()
+		if err != nil {
+			t.Fatalf("Token() #%d err = %v", i+1, err)
+		}
+		if tok.AccessToken != first.AccessToken {
+			t.Errorf("Token() #%d = %q, want the cached %q", i+1, tok.AccessToken, first.AccessToken)
+		}
+	}
+
+	if got := src.calls.Load(); got != 1 {
+		t.Errorf("upstream calls = %d across %d Token() calls, want 1", got, calls)
+	}
+}
+
 // countingTokenSource records how many times the application JWT was minted.
 type countingTokenSource struct {
 	calls atomic.Int32

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -342,49 +342,198 @@ func Test_Ptr(t *testing.T) {
 	})
 }
 
-func Test_createInstallationToken_ErrorPaths(t *testing.T) {
-	t.Run("error parsing endpoint URL", func(t *testing.T) {
-		// Create a client with an invalid base URL that will cause Parse to fail
-		client := &githubClient{
-			baseURL:    &url.URL{Scheme: "http", Host: "example.com", Path: ":::invalid"},
-			httpClient: &http.Client{},
-		}
+// roundTripperFunc adapts a function to http.RoundTripper so a transport can
+// fail without standing up a server.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-		_, err := client.createInstallationToken(context.Background(), 12345, nil)
-		if err == nil {
-			t.Error("Expected error for invalid base URL, got nil")
-		}
-	})
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-	t.Run("error marshaling options", func(t *testing.T) {
-		// This is difficult to trigger with InstallationTokenOptions as it has simple fields
-		// We would need to use reflection or create a custom type
-		// For now, we test with valid options and nil options which are both covered
-		client := newGitHubClient(&http.Client{})
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(InstallationToken{
-				Token:     "test-token",
-				ExpiresAt: time.Now().Add(1 * time.Hour),
-			})
-		}))
-		defer server.Close()
+// Test_doCreateInstallationToken_RequestErrors covers the two failures of a
+// single POST attempt that never produce a response: a URL net/url refuses, and
+// a transport that fails the round trip. They are driven through
+// doCreateInstallationToken directly because createInstallationToken builds its
+// URL with url.URL.JoinPath and therefore cannot produce an unusable one.
+func Test_doCreateInstallationToken_RequestErrors(t *testing.T) {
+	t.Parallel()
 
-		client.baseURL, _ = client.baseURL.Parse(server.URL)
+	tests := []struct {
+		name      string
+		transport http.RoundTripper
+		reqURL    string
+		want      string
+	}{
+		{
+			// DEL is a control character net/url rejects, so http.NewRequest
+			// fails and no connection is ever attempted.
+			name:   "URL carrying a control character",
+			reqURL: "http://example.invalid/app/installations/1/access_tokens\x7f",
+			want:   "failed to create request",
+		},
+		{
+			name: "transport fails the round trip",
+			transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("connection refused")
+			}),
+			reqURL: "http://example.invalid/app/installations/1/access_tokens",
+			want:   "failed to execute request",
+		},
+	}
 
-		opts := &InstallationTokenOptions{
-			Repositories: []string{"repo1", "repo2"},
-			Permissions: &InstallationPermissions{
-				Contents: Ptr("read"),
-				Issues:   Ptr("write"),
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := newGitHubClient(&http.Client{Transport: tt.transport})
+
+			tok, err := c.doCreateInstallationToken(context.Background(), tt.reqURL, nil)
+			if err == nil {
+				t.Fatalf("doCreateInstallationToken() err = nil, want an error containing %q", tt.want)
+			}
+			if tok != nil {
+				t.Errorf("token = %+v, want nil", tok)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %q, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// Test_createInstallationToken_EndpointURL pins the path the client POSTs to.
+// The endpoint is joined onto the base with url.URL.JoinPath, so an Enterprise
+// base path such as /api/v3/ has to survive rather than be resolved away the
+// way a relative reference would resolve it.
+func Test_createInstallationToken_EndpointURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		basePath string // appended to the httptest server URL
+		wantPath string
+	}{
+		{
+			name:     "root base path",
+			basePath: "/",
+			wantPath: "/app/installations/12345/access_tokens",
+		},
+		{
+			name:     "enterprise base path",
+			basePath: "/api/v3/",
+			wantPath: "/api/v3/app/installations/12345/access_tokens",
+		},
+		{
+			name:     "nested base path",
+			basePath: "/gh/api/v3/",
+			wantPath: "/gh/api/v3/app/installations/12345/access_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotPath := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath <- r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(InstallationToken{
+					Token:     "test-token",
+					ExpiresAt: time.Now().Add(time.Hour),
+				})
+			}))
+			defer server.Close()
+
+			c := newGitHubClient(&http.Client{})
+			if _, err := c.withBaseURL(server.URL + tt.basePath); err != nil {
+				t.Fatalf("withBaseURL(%q): %v", tt.basePath, err)
+			}
+
+			if _, err := c.createInstallationToken(context.Background(), 12345, nil); err != nil {
+				t.Fatalf("createInstallationToken() err = %v", err)
+			}
+
+			select {
+			case got := <-gotPath:
+				if got != tt.wantPath {
+					t.Errorf("request path = %q, want %q", got, tt.wantPath)
+				}
+			default:
+				t.Fatal("server received no request")
+			}
+		})
+	}
+}
+
+// Test_createInstallationToken_SendsOptionsBody proves InstallationTokenOptions
+// reach GitHub as the JSON request body, and that a nil options value sends no
+// body at all rather than a JSON "null".
+func Test_createInstallationToken_SendsOptionsBody(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     *InstallationTokenOptions
+		wantBody string
+	}{
+		{
+			name:     "nil options send no body",
+			opts:     nil,
+			wantBody: "",
+		},
+		{
+			name: "options are marshaled into the body",
+			opts: &InstallationTokenOptions{
+				Repositories: []string{"repo1", "repo2"},
+				Permissions: &InstallationPermissions{
+					Contents: Ptr("read"),
+					Issues:   Ptr("write"),
+				},
 			},
-		}
+			wantBody: `{"repositories":["repo1","repo2"],"permissions":{"contents":"read","issues":"write"}}`,
+		},
+	}
 
-		_, err := client.createInstallationToken(context.Background(), 12345, opts)
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotBody := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+				}
+				gotBody <- string(b)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(InstallationToken{
+					Token:     "test-token",
+					ExpiresAt: time.Now().Add(time.Hour),
+				})
+			}))
+			defer server.Close()
+
+			client := newClientForServer(t, server)
+
+			tok, err := client.createInstallationToken(context.Background(), 12345, tt.opts)
+			if err != nil {
+				t.Fatalf("createInstallationToken() err = %v", err)
+			}
+			if tok.Token != "test-token" {
+				t.Errorf("token = %q, want %q", tok.Token, "test-token")
+			}
+
+			select {
+			case got := <-gotBody:
+				if got != tt.wantBody {
+					t.Errorf("request body = %q, want %q", got, tt.wantBody)
+				}
+			default:
+				t.Fatal("server received no request")
+			}
+		})
+	}
 }
 
 // throttleResponse programs one hit on throttleHandler. A response is emitted

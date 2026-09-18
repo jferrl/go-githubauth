@@ -209,15 +209,18 @@ func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
 //
 // API documentation: https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-an-installation-access-token-for-an-app
 func (c *githubClient) createInstallationToken(ctx context.Context, installationID int64, opts *InstallationTokenOptions) (*InstallationToken, error) {
-	endpoint := fmt.Sprintf("app/installations/%d/access_tokens", installationID)
-	u, err := c.baseURL.Parse(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse endpoint URL: %w", err)
-	}
+	// JoinPath appends to the base path and escapes each element, so it cannot
+	// fail the way resolving a relative reference can, and an Enterprise base
+	// path such as /api/v3/ is preserved rather than resolved against.
+	u := c.baseURL.JoinPath("app", "installations", strconv.FormatInt(installationID, 10), "access_tokens")
 
 	var bodyBytes []byte
 	if opts != nil {
+		var err error
 		bodyBytes, err = json.Marshal(opts)
+		// Unreachable guard: InstallationTokenOptions holds only strings,
+		// int64s and pointers to them, none of which json.Marshal can reject.
+		// Kept so a future field that can fail is not silently sent as no body.
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
