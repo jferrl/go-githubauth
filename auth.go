@@ -214,26 +214,25 @@ func NewApplicationTokenSourceFromSigner[T Identifier](id T, signer crypto.Signe
 // resolveIssuer converts a generic App ID / Client ID to its string form
 // and rejects zero values.
 func resolveIssuer[T Identifier](id T) (string, error) {
-	// Identifier is "~int64 | ~string", so defined types such as
-	// "type AppID int64" satisfy it. A type switch matches the exact dynamic
-	// type and would reject those, hence the switch on the underlying kind.
-	v := reflect.ValueOf(id)
-	switch v.Kind() {
-	case reflect.Int64:
-		n := v.Int()
-		if n == 0 {
-			return "", errors.New("application identifier is required")
-		}
-		return strconv.FormatInt(n, 10), nil
-	case reflect.String:
-		s := v.String()
-		if s == "" {
-			return "", errors.New("application identifier is required")
-		}
-		return s, nil
-	default:
-		return "", errors.New("unsupported identifier type")
+	// Identifier is "~int64 | ~string", so both forms are comparable and their
+	// zero value — 0 or "" — is the one input GitHub cannot use.
+	var zero T
+	if id == zero {
+		return "", errors.New("application identifier is required")
 	}
+
+	// Defined types such as "type AppID int64" satisfy Identifier, but a type
+	// switch matches the exact dynamic type and would reject them, hence the
+	// switch on the underlying kind. reflect also sidesteps fmt's Stringer
+	// dispatch, which would let a defined type with a String method rewrite
+	// its own issuer.
+	v := reflect.ValueOf(id)
+	if v.Kind() == reflect.String {
+		return v.String(), nil
+	}
+
+	// Identifier admits no kind other than int64 here.
+	return strconv.FormatInt(v.Int(), 10), nil
 }
 
 func newApplicationTokenSource(issuer string, signer crypto.Signer, opts ...ApplicationTokenOpt) oauth2.TokenSource {
@@ -265,6 +264,9 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	})
 
 	signingString, err := token.SigningString()
+	// Unreachable guard: SigningString fails only if the fixed header map or
+	// the RegisteredClaims above fail to marshal, which they cannot. Kept so a
+	// future claim type that can fail is not silently signed as an empty JWT.
 	if err != nil {
 		return nil, err
 	}
