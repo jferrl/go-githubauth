@@ -41,6 +41,21 @@
 // already-expired credential. The window is tunable with WithExpirySkew
 // (application JWTs) and WithInstallationExpirySkew (installation tokens).
 //
+// # Handling rate limits
+//
+// A throttled request returns a [RateLimitError] carrying the wait the client
+// computed from GitHub's own headers, so a caller running its own backoff does
+// not have to re-parse a response it never sees:
+//
+//	var rle *githubauth.RateLimitError
+//	if errors.As(err, &rle) {
+//		time.Sleep(rle.RetryAfter)
+//	}
+//
+// It unwraps to ErrRateLimited, so errors.Is(err, ErrRateLimited) keeps working.
+// A 403 permission failure is not a rate limit and matches neither, even though
+// GitHub attaches rate-limit headers to it.
+//
 // # Signing with external key stores
 //
 // NewApplicationTokenSourceFromSigner accepts any RSA-backed [crypto.Signer]
