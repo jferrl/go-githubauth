@@ -5,51 +5,190 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+> **Module path.** `github.com/jferrl/go-githubauth` (v1.x) is the supported module. The
+> `/v2` path was published by accident and is **permanently retracted**: v2.0.0, v2.0.1
+> and v2.0.2 are all covered by the `retract` block in `v2/go.mod` at the `v2.0.2` tag,
+> including v2.0.2 itself, so `go get` resolves none of them and `go list -m -versions`
+> reports no versions for that path. There will be no v2.
+>
+> That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
+> longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
-### Notes
+## [v1.8.0] - 2026-09-18
 
-#### GitHub stateless installation tokens: no action required
+A correctness release. Two changes alter behaviour callers may depend on; both
+are listed under Changed and are worth reading before upgrading.
 
-GitHub is replacing the short opaque installation token with a `ghs_`-prefixed JWT of
-about 520 characters
-([announcement](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/)).
-This library is unaffected. It copies the token string from the API response into
-`oauth2.Token.AccessToken` and never parses, measures or validates it. Expiry is read
-from the response's `expires_at` field, so proactive refresh is unchanged. Both formats
-are covered by tests.
+### Added
 
-GitHub Enterprise Server is out of scope. Enterprise Cloud and Data Residency endpoints,
-reached with `WithBaseURL`, are in scope. Actions `GITHUB_TOKEN` is included in the
-rollout.
+- `RateLimitError{StatusCode, RetryAfter, Message}`, the concrete error returned when
+  GitHub throttles a request. It carries the wait the client computed from GitHub's own
+  headers, so a caller running its own backoff no longer has to re-parse a response it
+  never sees. Extract it with `errors.As`; it unwraps to `ErrRateLimited`, so
+  `errors.Is` and the rendered error string are unchanged (#65)
 
-To force a format while validating your own code, set the temporary
-`X-GitHub-Stateless-S2S-Token` header (`enabled` or `disabled`) through a custom
-transport:
+### Changed
 
-```go
-type statelessRT struct{ base http.RoundTripper }
+- **A 403 is no longer treated as rate limiting just because it carries rate-limit
+  headers.** GitHub attaches `X-RateLimit-*` to essentially every authenticated
+  response, so a terminal `Resource not accessible by integration` was slept on for up
+  to 60s, retried, and returned wrapped in `ErrRateLimited`. A 403 now counts as
+  throttled only when it carries `Retry-After`, reports an exhausted budget, or says so
+  in its message. Callers branching on `errors.Is(err, ErrRateLimited)` will no longer
+  match a permission failure (#63)
+- **`WithApplicationTokenExpiration` rejects values at or below 90 seconds**, the 60s
+  clock-drift backdate plus `DefaultExpirySkew`, falling back to the 10 minute default.
+  Below that bound the cache can never hold the token and every call re-signs. The
+  README previously documented `1 * time.Minute`, which is affected (#63)
+- `WithHTTPClient` reuses the application JWT across requests, matching the default
+  transport, instead of re-signing on every installation-token request (#62)
 
-func (s statelessRT) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set("X-GitHub-Stateless-S2S-Token", "enabled")
-	return s.base.RoundTrip(r)
-}
+### Security
 
-src := githubauth.NewInstallationTokenSource(installationID, appSource,
-	githubauth.WithHTTPClient(&http.Client{Transport: statelessRT{base: http.DefaultTransport}}),
-)
-```
+- **An empty webhook secret is refused instead of used as an HMAC key.** HMAC accepts a
+  zero-length key, so a deployment that called `Middleware(nil)` or read a missing
+  secret from the environment verified every delivery against a key anyone can
+  reproduce, and forged payloads reached the downstream handler as authentic. `Verify`
+  now returns the new `ErrMissingSecret`, so a misconfigured deployment fails closed
+  (#61)
 
-GitHub ignores any other value, so confirm what you received by counting the dots after
-`ghs_`: two means stateless, none means the classic form. Remove the header once you are
-done. It will stop being respected at a future deprecation point.
+### Fixed
+
+- Named identifier types are accepted. The `Identifier` constraint is `~int64 | ~string`,
+  but the implementation type-switched on the exact dynamic type, so `type AppID int64`
+  was rejected with `unsupported identifier type` (#63)
+- A short application token expiration no longer mints an already-dead JWT. Issuance is
+  backdated 60s for clock drift and only the upper bound was clamped, so a 30 second
+  expiration produced a token that had expired 30 seconds earlier (#63)
+- A non-positive installation ID fails as a configuration error before any network call,
+  rather than as a 404 from GitHub (#62)
+- The wait for a response header is bounded. Dial, TLS handshake and idle connections
+  were capped, but a server that accepted a connection and then stalled hung `Token()`
+  indefinitely, holding the token cache mutex against every concurrent caller (#61)
+- The error body of a failed response is capped at 64 KiB (#63)
+- Three comments claimed a default application JWT is usable for 9m30s; the backdating
+  makes it 8m30s (#63)
+- `ErrRateLimited` and `WithRetryOnThrottle` godoc now describe the 403 contract they
+  actually implement (#63)
+- Examples check the error from `resp.Body.Close` (#54)
+
+### Documentation
+
+- Added godoc examples, package documentation, `llms.txt`, and a comparison with
+  `ghinstallation` (#54)
+- README reduced from 587 to 148 lines (#54)
+- **GitHub stateless installation tokens: no action required.** GitHub is replacing the
+  short opaque installation token with a `ghs_`-prefixed JWT of about 520 characters
+  ([announcement](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/)).
+  This library copies the token string into `oauth2.Token.AccessToken` and never parses,
+  measures or validates it, and expiry is read from `expires_at`, so both formats work
+  unchanged. GitHub Enterprise Server is out of scope; Enterprise Cloud and Data
+  Residency endpoints are in scope, as is the Actions `GITHUB_TOKEN`
 
 ### Tests
 
-- Added `Test_createInstallationToken_TokenFormats`, covering verbatim passthrough of both
-  the stateless (520-character, two-dot) and classic opaque token formats, and confirming
-  expiry is sourced from `expires_at`
+- Both installation token formats, stateless and classic opaque, are pinned for verbatim
+  passthrough
+- Every reachable branch is covered, and a test that reached `example.com` over the
+  network on each CI run was replaced with ones that exercise what their names claim
+  (#66)
+
+### Internal
+
+- Dropped two branches no input can reach, and replaced a relative-reference endpoint
+  resolution with `url.URL.JoinPath`, which cannot fail and preserves an Enterprise
+  `/api/v3/` prefix by construction (#66)
+
+### Dependencies
+
+- Moved to the Go 1.26 toolchain
+- Bumped `golang.org/x/oauth2` from 0.36.0 to 0.37.0 (#59)
+- Bumped `github/codeql-action` from 4 to 4.38.0 (#53, #55, #56, #57, #58, #60)
+- Bumped `actions/setup-go` from 6 to 7 (#52)
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.7.0...v1.8.0>
+
+## [v1.7.0] - 2026-06-30
+
+GitHub Enterprise Cloud support and a more foolproof installation-token configuration.
+
+### Added
+
+- **Custom base URL**: `WithBaseURL` sets the API base URL verbatim, normalizing only a
+  trailing slash, mirroring how `go-github` targets a custom endpoint. Unlike
+  `WithEnterpriseURL` it does not append `/api/v3/`, which enables GitHub Enterprise
+  Cloud with data residency (`https://api.SUBDOMAIN.ghe.com/`) and pointing the client
+  at an `httptest` server in tests (#50)
+
+### Changed
+
+- **Order-independent options**: `WithBaseURL`, `WithEnterpriseURL`, `WithHTTPClient` and
+  `WithRetryOnThrottle` can be combined in any order. `WithHTTPClient` previously rebuilt
+  the client and silently discarded a base URL or retry setting applied before it
+- **Fail-loud configuration**: an invalid base URL, or a nil HTTP client, is reported by
+  the first call to `Token()` instead of silently falling back to the public GitHub API
+
+### Fixed
+
+- `WithHTTPClient` operates on a shallow copy, so the caller's `*http.Client`, which may
+  be shared elsewhere, keeps its original transport
+- Passing nil to `WithHTTPClient` yields a clear error instead of panicking
+
+### Maintenance
+
+- Removed the deprecated, no-op `net.Dialer.DualStack` field from the pooled HTTP client
+- Renamed the unexported `githubClient.client` field to `httpClient`
+
+### Tests
+
+- Coverage for `WithBaseURL` (GHEC and `httptest` URLs), option order-independence,
+  fail-loud misconfiguration, and that the caller's HTTP client is not mutated
+
+### Dependencies
+
+- Bumped `actions/cache` from 5 to 6 (#49)
+- Bumped `actions/checkout` from 6 to 7 (#48)
+- Bumped `codecov/codecov-action` from 6 to 7 (#46)
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.6.0...v1.7.0>
+
+## [v1.6.0] - 2026-04-20
+
+### Added
+
+- **External key store support**: `NewApplicationTokenSourceFromSigner` accepts any
+  `crypto.Signer` with an RSA public key, so the App private key never enters process
+  memory. Works with AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault Transit, PKCS#11
+  HSMs and ssh-agent. Construction verifies the signer's public key is `*rsa.PublicKey`,
+  since GitHub requires RS256
+- **Proactive token refresh**: `ReuseTokenSourceWithSkew` refreshes a cached token when
+  `time.Until(exp) <= skew` rather than waiting for expiry to pass, closing the window
+  where a request starts shortly before expiry and reaches GitHub already expired. Tune
+  with `WithExpirySkew` and `WithInstallationExpirySkew`
+- **Automatic retry on throttling**: installation token fetches retry once on 429, or on
+  403 carrying `Retry-After` / `X-RateLimit-Reset`. The sleep honors context cancellation
+  and is capped at 60s, and a terminal throttle wraps `ErrRateLimited` for `errors.Is`.
+  Opt out with `WithRetryOnThrottle(false)`
+- **`webhook` subpackage**: constant-time HMAC-SHA256 verification of GitHub deliveries.
+  `Verify` with sentinel errors (`ErrMissingSignature`, `ErrInvalidSignatureFormat`,
+  `ErrSignatureMismatch`), and `Middleware` with body restoration, a 25 MiB default cap
+  and 401/413 short-circuits, configurable via `WithMaxPayloadSize` and
+  `WithErrorHandler`
+
+### Changed
+
+- **Minimum Go version is 1.25**, transitively required by `golang.org/x/oauth2` v0.36.0.
+  The README previously claimed 1.21
+- **Token sources refresh 30s before expiry by default.** Pass `WithExpirySkew(0)` or
+  `WithInstallationExpirySkew(0)` to restore the previous behaviour
+
+### Dependencies
+
+- Bumped `golang.org/x/oauth2` from 0.34.0 to 0.36.0
+- Bumped `codecov/codecov-action` from 5 to 6
+- Bumped `styfle/cancel-workflow-action` from 0.13.0 to 0.13.1
+
+**Full Changelog**: <https://github.com/jferrl/go-githubauth/compare/v1.5.1...v1.6.0>
 
 ## [v1.5.1] - 2026-02-09
 
