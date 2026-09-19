@@ -48,6 +48,18 @@ httpClient := oauth2.NewClient(context.Background(), installationTokenSource)
 - Automatic single retry on throttled responses (`WithRetryOnThrottle`, enabled by default)
 - Two dependencies total: `golang-jwt/jwt` and `golang.org/x/oauth2`
 
+## Used by
+
+| Project | |
+|---|---|
+| [Kargo](https://github.com/akuity/kargo) | Application lifecycle orchestration |
+| [Terraform GitHub provider](https://github.com/integrations/terraform-provider-github) | The Terraform provider built and run by GitHub |
+| [gno](https://github.com/gnolang/gno) | Go virtual machine and blockchain behind gno.land |
+| [Updatecli](https://github.com/updatecli/updatecli) | Declarative update policy engine |
+| [Sippy](https://github.com/openshift/sippy) | Dashboards for OpenShift CI test and job data |
+
+Full list on [pkg.go.dev](https://pkg.go.dev/github.com/jferrl/go-githubauth?tab=importedby).
+
 ## Comparison with ghinstallation
 
 [`ghinstallation`](https://github.com/bradleyfalzon/ghinstallation) is the long-standing library in this space and works well. The core difference is the integration model: `ghinstallation` is an `http.RoundTripper` you install as an HTTP transport, while `go-githubauth` implements `oauth2.TokenSource`, so credentials compose with anything that speaks oauth2 — `oauth2.NewClient`, [go-github](https://github.com/google/go-github), gRPC per-RPC credentials, or code that just needs the token string.
