@@ -14,7 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
-## [Unreleased]
+## [v1.9.0] - 2026-09-19
+
+The library is unchanged. This release is the `githubauth` command line tool and the
+machinery to distribute it, so a shell script or CI step can get an installation token
+without a Go toolchain.
 
 ### Added
 
