@@ -36,3 +36,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pushing the Homebrew cask writes to jferrl/homebrew-tap, which the
+          # job's GITHUB_TOKEN cannot reach. Without this secret the release
+          # still publishes; only the cask is skipped.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

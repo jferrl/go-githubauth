@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and arm64, with a `checksums.txt` to verify them. A tagged release builds them with
   GoReleaser; the library is unaffected and is still consumed with `go get`.
 
+- A Homebrew cask, so the CLI installs without a Go toolchain:
+
+  ```bash
+  brew install jferrl/tap/githubauth
+  ```
+
+  The cask is generated into [jferrl/homebrew-tap](https://github.com/jferrl/homebrew-tap)
+  when a release is tagged.
+
 ### Fixed
 
 - `githubauth version` reported a pseudo-version for a binary that was not installed with

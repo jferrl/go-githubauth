@@ -13,7 +13,6 @@ before:
 builds:
   - id: githubauth
     main: ./cmd/githubauth
-    binary: githubauth
     env:
       - CGO_ENABLED=0
     goos:
@@ -81,3 +80,26 @@ release:
     ```bash
     go get github.com/jferrl/go-githubauth@{{ .Tag }}
     ```
+
+homebrew_casks:
+  - name: githubauth
+    # A failed tap push fails the whole release, binaries included. If the
+    # token is not set, publish everything else and skip only the cask.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+    repository:
+      owner: jferrl
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    homepage: https://github.com/jferrl/go-githubauth
+    description: GitHub App authentication for your shell - installation tokens, JWTs and PATs
+    license: MIT
+    commit_author:
+      name: jferrl
+      email: jorgeferrerolinacero@gmail.com
+    hooks:
+      post:
+        # The binary is not notarized, so Gatekeeper would quarantine it.
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/githubauth"]
+          end
