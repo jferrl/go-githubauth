@@ -7,7 +7,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -50,6 +49,19 @@ EXAMPLES
   vault kv get -field=pem secret/github-app |
     githubauth token --key - --installation 12345
 
+  # Run a command with the token in $GITHUB_TOKEN, printing it nowhere.
+  githubauth token --installation 12345 --exec -- gh pr list
+
+EXIT CODES
+  0  a credential was printed
+  1  something else failed, retrying may help
+  2  the invocation is wrong, fix the flags
+  3  GitHub refused the key or the App's permissions
+  4  rate limited, wait and repeat
+  5  the App is not installed where it was asked to be
+
+  Under --exec the exit code is the one the command exited with.
+
 Run "githubauth <command> --help" for the flags of a command.
 `
 
@@ -60,42 +72,50 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprint(stderr, rootHelp)
-		return 2
+		return exitUsage
 	}
+
+	// Agent mode is read before the flags, so a flag parse error is still
+	// reported as JSON when an agent is running.
+	out := output{agent: agentModeEnv()}
 
 	var err error
 	switch args[0] {
 	case "token":
-		err = tokenCmd(args[1:], stdin, stdout, stderr)
+		err = tokenCmd(args[1:], stdin, stdout, stderr, &out)
 	case "jwt":
-		err = jwtCmd(args[1:], stdin, stdout, stderr)
+		err = jwtCmd(args[1:], stdin, stdout, stderr, &out)
 	case "version", "--version", "-version", "-v":
 		_, _ = fmt.Fprintln(stdout, version())
-		return 0
+		return exitOK
 	case "help", "--help", "-help", "-h":
 		_, _ = fmt.Fprint(stdout, rootHelp)
-		return 0
+		return exitOK
 	default:
-		_, _ = fmt.Fprintf(stderr, "githubauth: unknown command %q\n", args[0])
-		if near := nearest(args[0]); near != "" {
-			_, _ = fmt.Fprintf(stderr, "\nDid you mean \"githubauth %s\"?\n", near)
-		}
-		_, _ = fmt.Fprintf(stderr, "\nRun \"githubauth help\" for usage.\n")
-		return 2
+		err = unknownCommand(args[0])
 	}
 
 	if err != nil {
-		var ue usageError
-		if errors.As(err, &ue) {
-			if !ue.reported {
-				_, _ = fmt.Fprintf(stderr, "githubauth: %v\n", err)
-			}
-			return 2
-		}
-		_, _ = fmt.Fprintf(stderr, "githubauth: %v\n", err)
-		return 1
+		return report(err, stdout, stderr, out)
 	}
-	return 0
+	return exitOK
+}
+
+// output is where the result and any failure go. Both commands fill it in
+// while parsing flags, so run can report an error the way the command would
+// have reported a success.
+type output struct {
+	json  bool
+	agent bool
+}
+
+// unknownCommand keeps the typo hint on one line. Three stderr paragraphs read
+// well to a person and badly to everything else.
+func unknownCommand(name string) error {
+	if near := nearest(name); near != "" {
+		return usagef("unknown command %q; did you mean \"githubauth %s\"?", name, near)
+	}
+	return usagef("unknown command %q; run \"githubauth help\" for usage", name)
 }
 
 // usageError is CLI misuse — an unknown flag, or a missing or conflicting
@@ -120,14 +140,49 @@ type appFlags struct {
 	clientID string
 	appID    int64
 	key      string
-	asJSON   bool
+	exec     bool
+	out      *output
 }
 
-func (a *appFlags) bind(fs *flag.FlagSet) {
+func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
+	a.out = out
+
 	fs.StringVar(&a.clientID, "client-id", os.Getenv("GITHUB_APP_CLIENT_ID"), "App client ID, e.g. Iv1.1234567890abcdef ($GITHUB_APP_CLIENT_ID)")
 	fs.Int64Var(&a.appID, "app-id", envInt64("GITHUB_APP_ID"), "legacy numeric App ID, for an App with no client ID ($GITHUB_APP_ID)")
 	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM ($GITHUB_APP_PRIVATE_KEY)")
-	fs.BoolVar(&a.asJSON, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token")
+	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token")
+	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN, printing it nowhere")
+	fs.BoolVar(&out.agent, "agent", out.agent, "report failures as one JSON document on stdout (on when a coding agent is detected)")
+}
+
+// checkExec validates the trailing arguments against --exec. Arguments without
+// --exec are usually a forgotten flag, and --exec with --json would format a
+// token that --exec exists to keep unprinted.
+func (a *appFlags) checkExec(argv []string) error {
+	switch {
+	case a.exec && len(argv) == 0:
+		return usagef("--exec needs a command: githubauth token --exec -- gh pr list")
+	case a.exec && a.out.json:
+		return usagef("--exec prints no credential, so --json has nothing to format")
+	case !a.exec && len(argv) > 0:
+		return usagef("unexpected argument %q: pass --exec to run a command with the credential", argv[0])
+	}
+	return nil
+}
+
+// emit delivers the credential: into a child process under --exec, otherwise
+// to stdout.
+func (a *appFlags) emit(tok *oauth2.Token, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if a.exec {
+		return runWithToken(argv, tok, stdin, stdout, stderr)
+	}
+	if err := write(stdout, tok, a.out.json); err != nil {
+		return err
+	}
+	if a.out.agent {
+		_, _ = fmt.Fprint(stderr, agentTokenHint)
+	}
+	return nil
 }
 
 // source builds the App JWT token source the other commands start from.
@@ -147,20 +202,32 @@ func (a *appFlags) source(stdin io.Reader, opts ...githubauth.ApplicationTokenOp
 	}
 
 	if a.clientID != "" {
-		return githubauth.NewApplicationTokenSource(a.clientID, pem, opts...)
+		return asCredential(githubauth.NewApplicationTokenSource(a.clientID, pem, opts...))
 	}
-	return githubauth.NewApplicationTokenSource(a.appID, pem, opts...)
+	return asCredential(githubauth.NewApplicationTokenSource(a.appID, pem, opts...))
 }
 
-func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+// asCredential labels a constructor failure. The key is parsed before any
+// request, so a failure here is the credential, not GitHub's answer about it.
+func asCredential(src oauth2.TokenSource, err error) (oauth2.TokenSource, error) {
+	if err != nil {
+		return nil, credentialError{err}
+	}
+	return src, nil
+}
+
+func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
 	fs := newFlagSet("token", "Print an installation access token.", stderr, `  # Scope the token to two repositories.
   githubauth token --installation 12345 --repos api,web
+
+  # Keep the token out of the terminal: it only ever reaches the child.
+  githubauth token --installation 12345 --exec -- gh pr list
 
   # GitHub Enterprise Server.
   githubauth token --installation 12345 --enterprise-url https://github.example.com`)
 
 	var app appFlags
-	app.bind(fs)
+	app.bind(fs, out)
 
 	installation := fs.Int64("installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
 	repos := fs.String("repos", "", "comma-separated repository names to scope the token to")
@@ -169,6 +236,9 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	if err := fs.Parse(args); err != nil {
 		return usageError{err: err, reported: true}
+	}
+	if err := app.checkExec(fs.Args()); err != nil {
+		return err
 	}
 	if *installation <= 0 {
 		return usagef("missing installation ID: set --installation")
@@ -199,20 +269,26 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return write(stdout, tok, app.asJSON)
+	return app.emit(tok, fs.Args(), stdin, stdout, stderr)
 }
 
-func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
 	fs := newFlagSet("jwt", "Print the App JWT, for the few endpoints that take one.", stderr, `  # A JWT valid for five minutes instead of ten.
-  githubauth jwt --client-id Iv1.abc --key app.pem --expiry 5m`)
+  githubauth jwt --client-id Iv1.abc --key app.pem --expiry 5m
+
+  # List the App's installations without the JWT reaching the terminal.
+  githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`)
 
 	var app appFlags
-	app.bind(fs)
+	app.bind(fs, out)
 
 	expiry := fs.Duration("expiry", 0, "JWT lifetime, over 90s and up to 10m (default 10m)")
 
 	if err := fs.Parse(args); err != nil {
 		return usageError{err: err, reported: true}
+	}
+	if err := app.checkExec(fs.Args()); err != nil {
+		return err
 	}
 
 	var opts []githubauth.ApplicationTokenOpt
@@ -229,7 +305,7 @@ func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return write(stdout, tok, app.asJSON)
+	return app.emit(tok, fs.Args(), stdin, stdout, stderr)
 }
 
 // newFlagSet gives every command the same help layout: what it does, how it is
@@ -284,7 +360,9 @@ func readKey(v string, stdin io.Reader) ([]byte, error) {
 	}
 	pem, err := os.ReadFile(v)
 	if err != nil {
-		return nil, fmt.Errorf("reading private key: %w", err)
+		// The flag was well-formed but points nowhere, which is the caller's
+		// invocation to fix rather than anything GitHub was asked about.
+		return nil, usagef("reading private key: %v", err)
 	}
 	return pem, nil
 }

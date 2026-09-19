@@ -37,6 +37,10 @@ func clearEnv(t *testing.T) {
 	for _, key := range appEnv {
 		t.Setenv(key, "")
 	}
+
+	// These tests usually run inside a coding agent, which would otherwise
+	// switch the error output to JSON on stdout under them.
+	t.Setenv("GITHUBAUTH_AGENT_MODE", "0")
 }
 
 func testKeyPEM(t *testing.T) []byte {
@@ -197,14 +201,14 @@ func TestRun(t *testing.T) {
 			args:       func(string) []string { return []string{"toekn"} },
 			wantCode:   2,
 			wantStdout: isEmpty,
-			wantStderr: `Did you mean "githubauth token"?`,
+			wantStderr: `did you mean "githubauth token"?`,
 		},
 		{
 			name:       "unrecognisable command offers help",
 			args:       func(string) []string { return []string{"xyzzy"} },
 			wantCode:   2,
 			wantStdout: isEmpty,
-			wantStderr: `Run "githubauth help" for usage.`,
+			wantStderr: `run "githubauth help" for usage`,
 		},
 		{
 			name:       "unknown flag is misuse",
@@ -289,9 +293,9 @@ func TestRun(t *testing.T) {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url}
 			},
 			setupServer: statusHandler(http.StatusUnauthorized),
-			wantCode:    1,
+			wantCode:    exitCredentials,
 			wantStdout:  isEmpty,
-			wantStderr:  "githubauth:",
+			wantStderr:  "GitHub rejected the App JWT",
 		},
 		{
 			name: "token needs an installation ID",
@@ -353,18 +357,102 @@ func TestRun(t *testing.T) {
 			wantStderr: "missing private key",
 		},
 		{
-			name:       "an unreadable key is a runtime failure, not misuse",
+			name:       "a key path that resolves to nothing is misuse",
 			args:       func(string) []string { return []string{"jwt", "--client-id", "Iv1.abc", "--key", "/no/such/key.pem"} },
-			wantCode:   1,
+			wantCode:   exitUsage,
 			wantStdout: isEmpty,
 			wantStderr: "reading private key",
 		},
 		{
-			name:       "a malformed PEM is a runtime failure",
+			name:       "a malformed PEM is a credential failure",
 			args:       func(string) []string { return []string{"jwt", "--client-id", "Iv1.abc", "--key", badKeyPath} },
-			wantCode:   1,
+			wantCode:   exitCredentials,
 			wantStdout: isEmpty,
-			wantStderr: "githubauth:",
+			wantStderr: "Check --key",
+		},
+		{
+			name: "exec runs a command instead of printing the token",
+			args: func(url string) []string {
+				return []string{
+					"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99",
+					"--base-url", url, "--exec", "--", os.Args[0], "-test.run=^TestExecHelper$",
+				}
+			},
+			env:         map[string]string{"GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "0"},
+			setupServer: tokenHandler("ghs_neverprinted"),
+			wantCode:    0,
+			wantStdout:  contains("saw=ghs_neverprinted"),
+		},
+		{
+			name: "exec exits as the command it ran did",
+			args: func(url string) []string {
+				return []string{
+					"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99",
+					"--base-url", url, "--exec", "--", os.Args[0], "-test.run=^TestExecHelper$",
+				}
+			},
+			env:         map[string]string{"GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "12"},
+			setupServer: tokenHandler("ghs_failing"),
+			wantCode:    12,
+		},
+		{
+			name: "exec without a command is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--exec"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--exec needs a command",
+		},
+		{
+			name: "a stray argument suggests the flag that would have used it",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "gh", "pr", "list"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "pass --exec",
+		},
+		{
+			name: "exec and json contradict each other",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--json", "--exec", "--", "true"}
+			},
+			// --json asked for JSON, so the refusal arrives as JSON too.
+			wantCode:   exitUsage,
+			wantStdout: contains("--json has nothing to format"),
+		},
+		{
+			name: "agent mode says the credential is now in the transcript",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url}
+			},
+			env:         map[string]string{"GITHUBAUTH_AGENT_MODE": "1"},
+			setupServer: tokenHandler("ghs_inthetranscript"),
+			wantCode:    0,
+			wantStdout:  isExactly("ghs_inthetranscript"),
+			wantStderr:  "--exec passes it to a command",
+		},
+		{
+			name: "agent mode reports a failure as one JSON document on stdout",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url}
+			},
+			env:         map[string]string{"GITHUBAUTH_AGENT_MODE": "1"},
+			setupServer: statusHandler(http.StatusNotFound),
+			wantCode:    exitNotFound,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+		},
+		{
+			name: "--agent=false opts out inside an agent",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url, "--agent=false"}
+			},
+			env:         map[string]string{"GITHUBAUTH_AGENT_MODE": "1"},
+			setupServer: statusHandler(http.StatusNotFound),
+			wantCode:    exitNotFound,
+			wantStdout:  isEmpty,
+			wantStderr:  "githubauth: GitHub API returned status 404",
 		},
 	}
 

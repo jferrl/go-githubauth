@@ -2,7 +2,7 @@
 
 > Go library for GitHub authentication — GitHub App JWTs, GitHub App installation tokens, and personal access tokens — exposed as standard `oauth2.TokenSource` implementations. Depends only on `github.com/golang-jwt/jwt` and `golang.org/x/oauth2`; no GitHub SDK required. Includes webhook signature verification.
 
-Module path: `github.com/jferrl/go-githubauth` — install with `go get github.com/jferrl/go-githubauth`. Requires Go 1.25+.
+Module path: `github.com/jferrl/go-githubauth` — install with `go get github.com/jferrl/go-githubauth`. Requires Go 1.26+.
 
 When to choose this library:
 
@@ -17,6 +17,7 @@ Core API (package `githubauth`):
 
 - `NewApplicationTokenSource(id, privateKeyPEM, opts...) (oauth2.TokenSource, error)` — App JWT source; `id` is a string Client ID or int64 App ID. Options: `WithApplicationTokenExpiration(d)` (>90s, max 10m; outside that range falls back to 10m), `WithExpirySkew(d)`.
 - `NewApplicationTokenSourceFromSigner(id, signer crypto.Signer, opts...) (oauth2.TokenSource, error)` — App JWT source backed by an external RSA signer (KMS/HSM/Vault/ssh-agent).
+- `APIError{StatusCode, Message}` — concrete error for a request GitHub rejected for any reason other than throttling. Extract with `errors.As` to tell a refused credential (401/403) from an installation that does not exist (404) without matching on the message.
 - `RateLimitError{StatusCode, RetryAfter, Message}` — concrete error for a throttled request; extract with `errors.As`. Unwraps to `ErrRateLimited`, so `errors.Is` keeps working. A 403 permission failure matches neither.
 - `NewInstallationTokenSource(installationID int64, appSource oauth2.TokenSource, opts...) oauth2.TokenSource` — exchanges the App JWT for an installation token. Options: `WithEnterpriseURL(url)` (GHES, appends /api/v3/), `WithBaseURL(url)` (verbatim; GHEC data residency or httptest), `WithHTTPClient(c)`, `WithRetryOnThrottle(bool)`, `WithInstallationExpirySkew(d)`, `WithInstallationTokenOptions(o)`, `WithContext(ctx)`.
 - `NewPersonalAccessTokenSource(token string) oauth2.TokenSource` — classic (`ghp_...`) or fine-grained (`github_pat_...`) PATs.
@@ -53,11 +54,26 @@ installationSource := githubauth.NewInstallationTokenSource(installationID, appS
 httpClient := oauth2.NewClient(context.Background(), installationSource)
 ```
 
+Command line (`githubauth`, from `cmd/githubauth`):
+
+The same credentials without writing Go. Install with `go install github.com/jferrl/go-githubauth/cmd/githubauth@latest`, `brew install jferrl/tap/githubauth`, or a release binary.
+
+- `githubauth token [flags]` — print an installation access token. Flags: `--installation`, `--repos`, `--base-url`, `--enterprise-url`.
+- `githubauth jwt [flags]` — print the App JWT, for the endpoints that take one. Flags: `--expiry`.
+- Shared flags: `--client-id` (or `--app-id` for a legacy App), `--key`, `--json`, `--exec`, `--agent`.
+- Environment fallbacks for every flag: `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID`. A configured environment reduces the call to `githubauth token`.
+- `--key` accepts a file path, `-` for stdin, or the PEM itself, so the key can come from a secret manager without touching disk.
+- The token is the only thing on stdout, so it composes: `curl -H "Authorization: Bearer $(githubauth token)" https://api.github.com/installation/repositories`.
+- `--exec` runs a command with the credential in its `$GITHUB_TOKEN` and prints it nowhere, which keeps it out of transcripts, logs and scrollback: `githubauth token --installation 12345 --exec -- gh pr list`. The exit code is then the command's own.
+- Exit codes: 0 printed a credential, 1 general failure (retrying may help), 2 bad invocation, 3 GitHub refused the key or the App's permissions, 4 rate limited (wait and repeat), 5 the App is not installed where it was asked to be. Branch on these rather than on message text.
+- Under `--json`, or when a coding agent is detected, a failure is one JSON document on stdout and stderr stays empty: `{"type":"githubauth.error","schema_version":"1","error":{"summary":...,"exit_code":5,"status_code":404,"retry_after_seconds":...,"suggestions":[...]}}`. Agent detection reads `CLAUDECODE`, `CLAUDE_CODE`, `CURSOR_AGENT`, `GITHUB_COPILOT`, `AMAZON_Q`, `OPENCODE`, `PI_CODING_AGENT`. `GITHUBAUTH_AGENT_MODE` or `--agent`/`--agent=false` overrides it. Set `GITHUBAUTH_AGENT_MODE=0` in a test suite that shells out to the CLI. Agent mode never changes the success output — a bare token stays a bare token.
+
 ## Docs
 
 - [README](https://github.com/jferrl/go-githubauth/blob/main/README.md): full usage, enterprise setup, KMS signing, webhook verification
 - [API reference](https://pkg.go.dev/github.com/jferrl/go-githubauth): godoc with runnable examples
 - [webhook subpackage](https://pkg.go.dev/github.com/jferrl/go-githubauth/webhook): webhook verification reference
+- [AGENTS.md](https://github.com/jferrl/go-githubauth/blob/main/AGENTS.md): using the CLI and library from a coding agent, and the repo's conventions
 
 ## Related
 

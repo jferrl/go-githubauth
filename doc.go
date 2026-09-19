@@ -54,7 +54,14 @@
 //
 // It unwraps to ErrRateLimited, so errors.Is(err, ErrRateLimited) keeps working.
 // A 403 permission failure is not a rate limit and matches neither, even though
-// GitHub attaches rate-limit headers to it.
+// GitHub attaches rate-limit headers to it. Every rejection other than
+// throttling arrives as an [APIError], carrying the status code so a caller can
+// tell a refused credential from an installation that does not exist:
+//
+//	var apiErr *githubauth.APIError
+//	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+//		// the App is not installed on that installation ID
+//	}
 //
 // # Signing with external key stores
 //
