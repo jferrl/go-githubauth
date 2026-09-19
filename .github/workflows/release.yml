@@ -30,6 +30,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # A missing or empty tap token skips the cask instead of failing the
+      # release, which is the right trade but is otherwise invisible. Say so in
+      # the log, because a secret cannot be read back to check it.
+      - name: Report whether the Homebrew cask will publish
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. Archives and checksums will publish; the Homebrew cask will be skipped."
+          else
+            echo "HOMEBREW_TAP_GITHUB_TOKEN is present. The cask will be pushed to jferrl/homebrew-tap."
+          fi
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
