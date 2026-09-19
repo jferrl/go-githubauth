@@ -89,7 +89,14 @@ homebrew_casks:
     repository:
       owner: jferrl
       name: homebrew-tap
-      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+      # GoReleaser requires exactly {{ .Env.VAR }} here and rejects any other
+      # form, including {{ index .Env "VAR" }}. It is a publish-time check, so
+      # "goreleaser check" and snapshot builds both pass a wrong one.
+      #
+      # This resolves because the workflow always sets the variable, to the
+      # empty string when the secret is missing; skip_upload then stops the
+      # upload before the token is used.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/jferrl/go-githubauth
     description: GitHub App authentication for your shell - installation tokens, JWTs and PATs
     license: MIT

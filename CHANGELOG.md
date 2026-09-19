@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [v1.9.1] - 2026-09-19
+
+### Fixed
+
+- The v1.9.0 release published its binaries and checksums but not the Homebrew cask.
+  GoReleaser requires the tap token to be written as exactly `{{ .Env.VAR }}` and rejects
+  any other form; the config used `{{ index .Env "VAR" }}`. The rule is enforced when
+  publishing, so `goreleaser check` and snapshot builds both accepted it.
+
+  `brew install jferrl/tap/githubauth` works from this release on. The v1.9.0 archives
+  were unaffected and remain valid.
+
 ## [v1.9.0] - 2026-09-19
 
 The library is unchanged. This release is the `githubauth` command line tool and the
