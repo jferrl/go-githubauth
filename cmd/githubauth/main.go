@@ -54,33 +54,33 @@ Run "githubauth <command> --help" for the flags of a command.
 `
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, rootHelp)
+		_, _ = fmt.Fprint(stderr, rootHelp)
 		return 2
 	}
 
 	var err error
 	switch args[0] {
 	case "token":
-		err = tokenCmd(args[1:], stdout, stderr)
+		err = tokenCmd(args[1:], stdin, stdout, stderr)
 	case "jwt":
-		err = jwtCmd(args[1:], stdout, stderr)
+		err = jwtCmd(args[1:], stdin, stdout, stderr)
 	case "version", "--version", "-version", "-v":
-		fmt.Fprintln(stdout, version())
+		_, _ = fmt.Fprintln(stdout, version())
 		return 0
 	case "help", "--help", "-help", "-h":
-		fmt.Fprint(stdout, rootHelp)
+		_, _ = fmt.Fprint(stdout, rootHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "githubauth: unknown command %q\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "githubauth: unknown command %q\n", args[0])
 		if near := nearest(args[0]); near != "" {
-			fmt.Fprintf(stderr, "\nDid you mean \"githubauth %s\"?\n", near)
+			_, _ = fmt.Fprintf(stderr, "\nDid you mean \"githubauth %s\"?\n", near)
 		}
-		fmt.Fprintf(stderr, "\nRun \"githubauth help\" for usage.\n")
+		_, _ = fmt.Fprintf(stderr, "\nRun \"githubauth help\" for usage.\n")
 		return 2
 	}
 
@@ -88,11 +88,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		var ue usageError
 		if errors.As(err, &ue) {
 			if !ue.reported {
-				fmt.Fprintf(stderr, "githubauth: %v\n", err)
+				_, _ = fmt.Fprintf(stderr, "githubauth: %v\n", err)
 			}
 			return 2
 		}
-		fmt.Fprintf(stderr, "githubauth: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "githubauth: %v\n", err)
 		return 1
 	}
 	return 0
@@ -152,7 +152,7 @@ func (a *appFlags) source(stdin io.Reader, opts ...githubauth.ApplicationTokenOp
 	return githubauth.NewApplicationTokenSource(a.appID, pem, opts...)
 }
 
-func tokenCmd(args []string, stdout, stderr io.Writer) error {
+func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := newFlagSet("token", "Print an installation access token.", stderr, `  # Scope the token to two repositories.
   githubauth token --installation 12345 --repos api,web
 
@@ -177,7 +177,7 @@ func tokenCmd(args []string, stdout, stderr io.Writer) error {
 		return usagef("set --base-url or --enterprise-url, not both")
 	}
 
-	appSrc, err := app.source(os.Stdin)
+	appSrc, err := app.source(stdin)
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func tokenCmd(args []string, stdout, stderr io.Writer) error {
 	return write(stdout, tok, app.asJSON)
 }
 
-func jwtCmd(args []string, stdout, stderr io.Writer) error {
+func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := newFlagSet("jwt", "Print the App JWT, for the few endpoints that take one.", stderr, `  # A JWT valid for five minutes instead of ten.
   githubauth jwt --client-id Iv1.abc --key app.pem --expiry 5m`)
 
@@ -220,7 +220,7 @@ func jwtCmd(args []string, stdout, stderr io.Writer) error {
 		opts = append(opts, githubauth.WithApplicationTokenExpiration(*expiry))
 	}
 
-	src, err := app.source(os.Stdin, opts...)
+	src, err := app.source(stdin, opts...)
 	if err != nil {
 		return err
 	}
@@ -238,9 +238,9 @@ func newFlagSet(name, summary string, stderr io.Writer, examples string) *flag.F
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "%s\n\nUSAGE\n  githubauth %s [flags]\n\nFLAGS\n", summary, name)
+		_, _ = fmt.Fprintf(stderr, "%s\n\nUSAGE\n  githubauth %s [flags]\n\nFLAGS\n", summary, name)
 		printFlags(stderr, fs)
-		fmt.Fprintf(stderr, "\nEXAMPLES\n%s\n", examples)
+		_, _ = fmt.Fprintf(stderr, "\nEXAMPLES\n%s\n", examples)
 	}
 	return fs
 }
@@ -269,7 +269,7 @@ func printFlags(w io.Writer, fs *flag.FlagSet) {
 	})
 
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %-*s   %s\n", width, r.name, r.usage)
+		_, _ = fmt.Fprintf(w, "  %-*s   %s\n", width, r.name, r.usage)
 	}
 }
 
