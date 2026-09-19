@@ -46,6 +46,8 @@ httpClient := oauth2.NewClient(context.Background(), installationTokenSource)
 - Webhook delivery verification (`X-Hub-Signature-256`, constant-time) with ready-made `http.Handler` middleware
 - GitHub Enterprise Server and GitHub Enterprise Cloud (data residency) support
 - Automatic single retry on throttled responses (`WithRetryOnThrottle`, enabled by default)
+- Typed errors to branch on: `RateLimitError` (with `RetryAfter`) for a throttled request, `APIError` (with `StatusCode`) for every other rejection
+- A `githubauth` CLI with a documented exit code per failure class and `--exec`, which passes the credential to a command without printing it
 - Two dependencies total: `golang-jwt/jwt` and `golang.org/x/oauth2`
 
 ## Used by
@@ -100,6 +102,39 @@ vault kv get -field=pem secret/github-app |
 `githubauth jwt` prints the App JWT for the few endpoints that need one, `--json` adds the
 expiry, and `--repos` scopes the token to named repositories. Run `githubauth help` for the
 rest.
+
+### Keeping the token out of your logs
+
+A printed credential stays valid for an hour, in every place your output landed: a CI log,
+a terminal scrollback, a coding agent's transcript. `--exec` runs a command with the token
+in its `$GITHUB_TOKEN` and prints it nowhere, exiting with whatever the command exited
+with:
+
+```bash
+githubauth token --installation 12345 --exec -- gh pr list
+```
+
+### Exit codes
+
+Scripts and agents branch on the code rather than on the message:
+
+| Code | Meaning |
+|---|---|
+| 0 | a credential was printed |
+| 1 | something else failed, retrying may help |
+| 2 | the invocation is wrong |
+| 3 | GitHub refused the key or the App's permissions |
+| 4 | rate limited, wait and repeat |
+| 5 | the App is not installed where it was asked to be |
+
+Under `--json`, or when a coding agent is detected, a failure is one JSON document on
+stdout — `{"type":"githubauth.error","schema_version":"1","error":{...}}`, carrying
+`exit_code`, `status_code`, `retry_after_seconds` and suggestions — and stderr stays empty.
+Detection reads the usual agent variables (`CLAUDECODE`, `CURSOR_AGENT`, and friends);
+`GITHUBAUTH_AGENT_MODE` or `--agent`/`--agent=false` overrides it, and a test suite that
+shells out to the CLI should set `GITHUBAUTH_AGENT_MODE=0`. The success output never
+changes: a bare token stays a bare token, so `$(githubauth token)` means the same thing
+everywhere. [AGENTS.md](AGENTS.md) has the full contract.
 
 ## Comparison with ghinstallation
 

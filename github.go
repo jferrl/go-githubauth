@@ -80,6 +80,29 @@ func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
 // to it. Callers can branch with errors.Is.
 var ErrRateLimited = errors.New("github API rate limited")
 
+// APIError is the concrete error returned when GitHub rejects a request for a
+// reason other than throttling. It carries the status code so a caller can tell
+// a credential that GitHub refused (401) from an installation that does not
+// exist (404) without matching on the message:
+//
+//	var apiErr *githubauth.APIError
+//	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+//		// the App is not installed on that installation ID
+//	}
+//
+// A throttled request returns RateLimitError instead.
+type APIError struct {
+	// StatusCode is the HTTP status GitHub returned.
+	StatusCode int
+
+	// Message is the response body, truncated to maxErrorBodyBytes.
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("GitHub API returned status %d: %s", e.StatusCode, e.Message)
+}
+
 // InstallationTokenOptions specifies options for creating an installation token.
 type InstallationTokenOptions struct {
 	// Repositories is a list of repository names that the token should have access to.
@@ -285,7 +308,7 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 		}
 	}
 
-	return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(bodyResp))
+	return nil, &APIError{StatusCode: resp.StatusCode, Message: string(bodyResp)}
 }
 
 // throttleDelay inspects a non-2xx response and reports the retry hint GitHub

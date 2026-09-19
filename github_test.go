@@ -1335,6 +1335,28 @@ func Test_RateLimitError_NotReturnedForTerminalFailures(t *testing.T) {
 			if errors.Is(err, ErrRateLimited) {
 				t.Errorf("errors.Is(err, ErrRateLimited) = true for a terminal %d", tt.status)
 			}
+
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("errors.As(*APIError) = false for a terminal %d: %v", tt.status, err)
+			}
+			if apiErr.StatusCode != tt.status {
+				t.Errorf("APIError.StatusCode = %d, want %d", apiErr.StatusCode, tt.status)
+			}
+			if apiErr.Message != tt.body {
+				t.Errorf("APIError.Message = %q, want %q", apiErr.Message, tt.body)
+			}
 		})
+	}
+}
+
+// Test_APIError_MessageFormat pins the rendered message, which predates the
+// type: it was a fmt.Errorf string callers already log and match on.
+func Test_APIError_MessageFormat(t *testing.T) {
+	err := &APIError{StatusCode: http.StatusNotFound, Message: `{"message":"Not Found"}`}
+
+	want := `GitHub API returned status 404: {"message":"Not Found"}`
+	if got := err.Error(); got != want {
+		t.Errorf("Error() =\n  %q\nwant\n  %q", got, want)
 	}
 }
