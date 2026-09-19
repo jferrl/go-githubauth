@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser:
+    # The /v2 module path was published by accident and is permanently
+    # retracted (see CHANGELOG). The v2.0.1 and v2.0.2 tags have to stay in the
+    # repository because v2.0.2 is what carries the retract block, so a v2 tag
+    # can always be re-pushed by accident. Never build a release from one.
+    if: ${{ !startsWith(github.ref_name, 'v2.') }}
+    runs-on: ubuntu-latest
+    permissions:
+      # goreleaser creates the GitHub release and uploads the archives.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # goreleaser builds the changelog from history, so a shallow
+          # checkout would produce an empty one.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

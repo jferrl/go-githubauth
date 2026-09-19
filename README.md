@@ -62,7 +62,9 @@ Full list on [pkg.go.dev](https://pkg.go.dev/github.com/jferrl/go-githubauth?tab
 
 ## Command line
 
-The same credentials, without writing Go:
+The same credentials, without writing Go. Download a binary from the
+[latest release](https://github.com/jferrl/go-githubauth/releases/latest) — Linux, macOS
+and Windows, on amd64 and arm64 — or build it yourself:
 
 ```bash
 go install github.com/jferrl/go-githubauth/cmd/githubauth@latest

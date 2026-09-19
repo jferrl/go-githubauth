@@ -317,14 +317,46 @@ func envInt64(key string) int64 {
 	return n
 }
 
-// version reports the module version go install stamped, so a built binary
-// can say where it came from without a linker flag.
+// buildVersion is set by the release build with -ldflags. It stays empty for
+// a binary built any other way, which then falls back to the build info.
+var buildVersion string
+
+// version reports where the binary came from. A release build carries the tag
+// in buildVersion; go install stamps the module version into the build info;
+// a local build has neither and reports the revision instead.
 func version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
+
 	info, ok := debug.ReadBuildInfo()
-	if !ok || info.Main.Version == "" {
+	if !ok {
+		return "(unknown)"
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+
+	// A build from a checkout: report the commit Go stamped, if any.
+	var revision, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+	if revision == "" {
 		return "(devel)"
 	}
-	return info.Main.Version
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	if modified == "true" {
+		revision += "-dirty"
+	}
+	return "(devel) " + revision
 }
 
 // nearest suggests a command for a typo, matching on a shared prefix or a
