@@ -31,7 +31,7 @@ Please delete options that are not relevant.
 - [ ] I have performed a self-review of my own code
 - [ ] My changes generate no new warnings
 - [ ] I have checked my code and corrected any misspellings
-- [ ] My changes are compatible with the supported Go versions (1.21+)
+- [ ] My changes are compatible with the Go versions in `go.mod` and the CI matrix
 
 ## Screenshots (if applicable)
 
