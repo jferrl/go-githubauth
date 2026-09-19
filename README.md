@@ -60,6 +60,39 @@ httpClient := oauth2.NewClient(context.Background(), installationTokenSource)
 
 Full list on [pkg.go.dev](https://pkg.go.dev/github.com/jferrl/go-githubauth?tab=importedby).
 
+## Command line
+
+The same credentials, without writing Go:
+
+```bash
+go install github.com/jferrl/go-githubauth/cmd/githubauth@latest
+```
+
+```bash
+githubauth token --client-id Iv1.abc --key app.pem --installation 12345
+```
+
+The token goes to stdout and nothing else does, so it composes:
+
+```bash
+curl -H "Authorization: Bearer $(githubauth token)" \
+  https://api.github.com/installation/repositories
+```
+
+Every flag falls back to an environment variable — `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` — so a configured CI step is just
+`githubauth token`. `--key` takes a file path, the PEM itself, or `-` to read stdin, which
+keeps the key off disk:
+
+```bash
+vault kv get -field=pem secret/github-app |
+  githubauth token --key - --installation 12345
+```
+
+`githubauth jwt` prints the App JWT for the few endpoints that need one, `--json` adds the
+expiry, and `--repos` scopes the token to named repositories. Run `githubauth help` for the
+rest.
+
 ## Comparison with ghinstallation
 
 [`ghinstallation`](https://github.com/bradleyfalzon/ghinstallation) is the long-standing library in this space and works well. The core difference is the integration model: `ghinstallation` is an `http.RoundTripper` you install as an HTTP transport, while `go-githubauth` implements `oauth2.TokenSource`, so credentials compose with anything that speaks oauth2 — `oauth2.NewClient`, [go-github](https://github.com/google/go-github), gRPC per-RPC credentials, or code that just needs the token string.

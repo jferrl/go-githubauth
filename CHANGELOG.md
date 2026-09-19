@@ -14,6 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [Unreleased]
+
+### Added
+
+- `cmd/githubauth`, a command line tool that prints an installation token or the App JWT,
+  so a shell script or CI step can authenticate as a GitHub App without reimplementing
+  the JWT-then-exchange chain. Install it with
+  `go install github.com/jferrl/go-githubauth/cmd/githubauth@latest`.
+
+  The token is the only thing written to stdout, so `$(githubauth token)` composes with
+  `curl` and friends. Every flag falls back to an environment variable, and `--key`
+  accepts a file path, the PEM itself, or `-` to read stdin so the key never has to touch
+  disk.
+
+  It adds no module dependencies. The CLI is built on the standard library's `flag`, so
+  the two-dependency footprint is unchanged for anyone importing the library.
+
 ## [v1.8.0] - 2026-09-18
 
 A correctness release. Two changes alter behaviour callers may depend on; both
