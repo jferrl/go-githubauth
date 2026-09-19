@@ -31,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It adds no module dependencies. The CLI is built on the standard library's `flag`, so
   the two-dependency footprint is unchanged for anyone importing the library.
 
+- Prebuilt `githubauth` binaries on each release, for Linux, macOS and Windows on amd64
+  and arm64, with a `checksums.txt` to verify them. A tagged release builds them with
+  GoReleaser; the library is unaffected and is still consumed with `go get`.
+
+- A Homebrew cask, so the CLI installs without a Go toolchain:
+
+  ```bash
+  brew install jferrl/tap/githubauth
+  ```
+
+  The cask is generated into [jferrl/homebrew-tap](https://github.com/jferrl/homebrew-tap)
+  when a release is tagged.
+
+### Fixed
+
+- `githubauth version` reported a pseudo-version for a binary that was not installed with
+  `go install`. A release build now carries its tag, and a build from a checkout falls
+  back to the stamped commit.
+
 ## [v1.8.0] - 2026-09-18
 
 A correctness release. Two changes alter behaviour callers may depend on; both

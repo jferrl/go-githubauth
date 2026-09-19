@@ -1,0 +1,55 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser:
+    # The /v2 module path was published by accident and is permanently
+    # retracted (see CHANGELOG). The v2.0.1 and v2.0.2 tags have to stay in the
+    # repository because v2.0.2 is what carries the retract block, so a v2 tag
+    # can always be re-pushed by accident. Never build a release from one.
+    if: ${{ !startsWith(github.ref_name, 'v2.') }}
+    runs-on: ubuntu-latest
+    permissions:
+      # goreleaser creates the GitHub release and uploads the archives.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # goreleaser builds the changelog from history, so a shallow
+          # checkout would produce an empty one.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # A missing or empty tap token skips the cask instead of failing the
+      # release, which is the right trade but is otherwise invisible. Say so in
+      # the log, because a secret cannot be read back to check it.
+      - name: Report whether the Homebrew cask will publish
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. Archives and checksums will publish; the Homebrew cask will be skipped."
+          else
+            echo "HOMEBREW_TAP_GITHUB_TOKEN is present. The cask will be pushed to jferrl/homebrew-tap."
+          fi
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pushing the Homebrew cask writes to jferrl/homebrew-tap, which the
+          # job's GITHUB_TOKEN cannot reach. Without this secret the release
+          # still publishes; only the cask is skipped.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

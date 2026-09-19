@@ -23,3 +23,6 @@ go.work.sum
 
 # Claude Code local settings and scratch worktrees
 .claude/
+
+# GoReleaser build output
+dist/

@@ -1,0 +1,105 @@
+# Release config for the githubauth CLI. The library is consumed with go get and
+# is unaffected by anything here.
+#
+# Run "goreleaser release --snapshot --clean" to build locally without publishing.
+version: 2
+
+project_name: githubauth
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: githubauth
+    main: ./cmd/githubauth
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      # buildVersion is the CLI's own variable; without it a release binary
+      # would fall back to the build info and report a pseudo-version.
+      - -s -w -X main.buildVersion={{ .Version }}
+
+archives:
+  - id: githubauth
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+
+release:
+  footer: |
+    ## Installing the CLI
+
+    Download the archive for your platform above, or:
+
+    ```bash
+    go install github.com/jferrl/go-githubauth/cmd/githubauth@{{ .Tag }}
+    ```
+
+    Verify a download against `checksums.txt`:
+
+    ```bash
+    sha256sum -c checksums.txt --ignore-missing
+    ```
+
+    The library is unaffected by these artifacts:
+
+    ```bash
+    go get github.com/jferrl/go-githubauth@{{ .Tag }}
+    ```
+
+homebrew_casks:
+  - name: githubauth
+    # A failed tap push fails the whole release, binaries included. If the
+    # token is not set, publish everything else and skip only the cask.
+    skip_upload: '{{ if eq (index .Env "HOMEBREW_TAP_GITHUB_TOKEN") "" }}true{{ else }}false{{ end }}'
+    repository:
+      owner: jferrl
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    homepage: https://github.com/jferrl/go-githubauth
+    description: GitHub App authentication for your shell - installation tokens, JWTs and PATs
+    license: MIT
+    commit_author:
+      name: jferrl
+      email: jorgeferrerolinacero@gmail.com
+    hooks:
+      post:
+        # The binary is not notarized, so Gatekeeper would quarantine it.
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/githubauth"]
+          end
