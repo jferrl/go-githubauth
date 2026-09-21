@@ -43,7 +43,7 @@ jobs:
             echo "HOMEBREW_TAP_GITHUB_TOKEN is present. The cask will be pushed to jferrl/homebrew-tap."
           fi
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
