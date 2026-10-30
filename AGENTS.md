@@ -17,6 +17,16 @@ Prefer `--exec`, which puts the token in the child's `$GITHUB_TOKEN` and
 githubauth token --installation 12345 --exec -- gh pr list
 ```
 
+The same works for `git` once it takes credentials from `gh` (`gh auth setup-git`):
+`githubauth token --installation 12345 --exec -- git push`. With `--enterprise-url`
+or `--base-url`, `--exec` also sets `$GH_HOST` unless you already have. For the
+JWT, `gh` needs the header spelled out, because it sends `token` and GitHub takes
+a JWT only as `Bearer`:
+
+```bash
+githubauth jwt --exec -- sh -c 'gh api -H "Authorization: Bearer $GITHUB_TOKEN" /app/installations'
+```
+
 Print it only when something downstream genuinely needs the string, and prefer a
 short-lived scope when you do:
 

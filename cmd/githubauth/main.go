@@ -149,9 +149,9 @@ type appFlags struct {
 	exec     bool
 	out      *output
 	fs       *flag.FlagSet
-	// enterprise is set when the credential is for an Enterprise Server host,
-	// where gh reads its own pair of variables.
-	enterprise bool
+	// host is the instance the credential is for, as gh names it, or empty for
+	// github.com.
+	host string
 }
 
 func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
@@ -162,7 +162,7 @@ func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
 	fs.Int64Var(&a.appID, "app-id", envInt64("GITHUB_APP_ID"), "legacy numeric App ID, for an App with no client ID ($GITHUB_APP_ID)")
 	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM ($GITHUB_APP_PRIVATE_KEY)")
 	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token")
-	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere")
+	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere; $GH_HOST is set for an Enterprise or data residency host")
 	fs.BoolVar(&out.agent, "agent", out.agent, "report failures as one JSON document on stdout (on when a coding agent is detected)")
 }
 
@@ -185,7 +185,7 @@ func (a *appFlags) checkExec(argv []string) error {
 // to stdout.
 func (a *appFlags) emit(tok *oauth2.Token, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if a.exec {
-		return runWithToken(argv, tok, a.enterprise, stdin, stdout, stderr)
+		return runWithToken(argv, tok, a.host, stdin, stdout, stderr)
 	}
 	if err := write(stdout, tok, a.out.json); err != nil {
 		return err
@@ -237,7 +237,10 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
   # Keep the token out of the terminal: it only ever reaches the child.
   githubauth token --installation 12345 --exec -- gh pr list
 
-  # GitHub Enterprise Server.
+  # Push as the App, once git uses gh for credentials (gh auth setup-git).
+  githubauth token --installation 12345 --exec -- git push
+
+  # GitHub Enterprise Server. Under --exec, $GH_HOST points gh at it.
   githubauth token --installation 12345 --enterprise-url https://github.example.com`)
 
 	var app appFlags
@@ -276,7 +279,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return usagef("--repos names no repository; omit it for a token covering the whole installation")
 	}
 
-	app.enterprise = *enterpriseURL != ""
+	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
 
 	appSrc, err := app.source(stdin)
 	if err != nil {
@@ -308,8 +311,8 @@ func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *outpu
   githubauth jwt --client-id Iv1.abc --key app.pem --expiry 5m
 
   # List the App's installations without the JWT reaching the terminal.
-  # Not through gh: it sends "token", and GitHub takes a JWT only as "Bearer".
-  githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`)
+  # gh needs the header spelled out: it sends "token", and a JWT is only taken as "Bearer".
+  githubauth jwt --exec -- sh -c 'gh api -H "Authorization: Bearer $GITHUB_TOKEN" /app/installations'`)
 
 	var app appFlags
 	app.bind(fs, out)

@@ -114,6 +114,24 @@ command exited with:
 githubauth token --installation 12345 --exec -- gh pr list
 ```
 
+`git` pushes as the App too, once it takes credentials from `gh`, which reads `$GH_TOKEN`
+first:
+
+```bash
+gh auth setup-git    # once
+githubauth token --installation 12345 --exec -- git push
+```
+
+With `--enterprise-url` or `--base-url`, `--exec` also sets `$GH_HOST`, so `gh` talks to
+that instance instead of github.com. A `$GH_HOST` you exported yourself is kept.
+
+The JWT needs one more step. `gh` sends its credential as `token`, and GitHub accepts a JWT
+only as `Bearer`, so pass the header yourself:
+
+```bash
+githubauth jwt --exec -- sh -c 'gh api -H "Authorization: Bearer $GITHUB_TOKEN" /app/installations'
+```
+
 ### Exit codes
 
 Scripts and agents branch on the code rather than on the message:
