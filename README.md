@@ -107,8 +107,8 @@ rest.
 
 A printed credential stays valid for an hour, in every place your output landed: a CI log,
 a terminal scrollback, a coding agent's transcript. `--exec` runs a command with the token
-in its `$GITHUB_TOKEN` and prints it nowhere, exiting with whatever the command exited
-with:
+in its `$GITHUB_TOKEN` and `$GH_TOKEN` and prints it nowhere, exiting with whatever the
+command exited with:
 
 ```bash
 githubauth token --installation 12345 --exec -- gh pr list

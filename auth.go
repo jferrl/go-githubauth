@@ -311,11 +311,17 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 		// only the Transport is swapped to inject GitHub App authentication.
 		authClient := *client
 		authClient.Transport = &oauth2.Transport{
-			// Reuse the JWT across requests exactly as the default transport
-			// does; otherwise supplying a custom client silently re-signs on
-			// every installation-token request.
-			Source: oauth2.ReuseTokenSource(nil, i.src),
+			Source: cachedSource(i.src),
 			Base:   client.Transport,
+		}
+		// The caller's policy still applies, but only after ours: their client
+		// was not built knowing every hop would carry the App JWT.
+		callerCheck := client.CheckRedirect
+		authClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if err := sameHostRedirect(req, via); err != nil || callerCheck == nil {
+				return err
+			}
+			return callerCheck(req, via)
 		}
 
 		// Swap only the underlying *http.Client so the base URL and retry
@@ -381,8 +387,9 @@ func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 //
 // On a throttled response the client sleeps the duration hinted by Retry-After
 // or x-ratelimit-reset, falling back to one minute for a hintless rate-limit 403
-// (capped at 60s, honoring ctx cancellation), and retries once. Subsequent
-// failures bubble up unchanged. On a terminal throttle the returned error wraps
+// (honoring ctx cancellation), and retries once. A hint longer than 60s is not
+// slept through: the error returns at once, its RateLimitError.RetryAfter set to
+// GitHub's full wait. On a terminal throttle the returned error wraps
 // ErrRateLimited so callers can branch with errors.Is.
 //
 // Disable this when the caller implements its own backoff or when deterministic
@@ -449,7 +456,7 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 
 	httpClient := cleanHTTPClient()
 	httpClient.Transport = &oauth2.Transport{
-		Source: oauth2.ReuseTokenSource(nil, src),
+		Source: cachedSource(src),
 		Base:   httpClient.Transport,
 	}
 
@@ -472,6 +479,16 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 	}
 
 	return ReuseTokenSourceWithSkew(nil, i, i.skew)
+}
+
+// cachedSource reuses the App JWT across installation-token requests. A source
+// from NewApplicationTokenSource already caches with its own skew, and wrapping
+// it again would let the outer cache hold the JWT past that skew.
+func cachedSource(src oauth2.TokenSource) oauth2.TokenSource {
+	if _, ok := src.(*reuseTokenSourceWithSkew); ok {
+		return src
+	}
+	return ReuseTokenSourceWithSkew(nil, src, DefaultExpirySkew)
 }
 
 // Token generates a new GitHub App installation token for authenticating as a GitHub App installation.

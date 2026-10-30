@@ -170,6 +170,7 @@ func TestRun(t *testing.T) {
 		wantCode    int
 		wantStdout  func(*testing.T, string)
 		wantStderr  string
+		quietStderr bool
 	}{
 		{
 			name:       "no arguments print usage to stderr",
@@ -381,7 +382,7 @@ func TestRun(t *testing.T) {
 			env:         map[string]string{"GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "0"},
 			setupServer: tokenHandler("ghs_neverprinted"),
 			wantCode:    0,
-			wantStdout:  contains("saw=ghs_neverprinted"),
+			wantStdout:  contains("GITHUB_TOKEN=ghs_neverprinted"),
 		},
 		{
 			name: "exec exits as the command it ran did",
@@ -454,6 +455,117 @@ func TestRun(t *testing.T) {
 			wantStdout:  isEmpty,
 			wantStderr:  "githubauth: GitHub API returned status 404",
 		},
+		{
+			name:        "agent mode reports a missing command as JSON",
+			args:        func(string) []string { return nil },
+			env:         map[string]string{"GITHUBAUTH_AGENT_MODE": "1"},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			name:        "agent mode keeps the flag package's own message off stderr",
+			args:        func(string) []string { return []string{"token", "--bogus"} },
+			env:         map[string]string{"GITHUBAUTH_AGENT_MODE": "1"},
+			wantCode:    exitUsage,
+			wantStdout:  contains("flag provided but not defined"),
+			quietStderr: true,
+		},
+		{
+			name: "a --repos with no names is refused rather than widened to every repository",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--repos", " , "}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--repos names no repository",
+		},
+		{
+			name: "an unparseable --base-url is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--base-url", "%"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "must be an absolute http(s) URL",
+		},
+		{
+			name: "an --enterprise-url without a scheme is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--enterprise-url", "github.example.com"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "must be an absolute http(s) URL",
+		},
+		{
+			name: "an --expiry out of range is refused rather than replaced by 10m",
+			args: func(string) []string {
+				return []string{"jwt", "--client-id", "Iv1.abc", "--key", keyPath, "--expiry", "30s"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--expiry 30s is out of range",
+		},
+		{
+			name:       "a malformed environment ID is reported as malformed, not missing",
+			args:       func(string) []string { return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath} },
+			env:        map[string]string{"GITHUB_APP_INSTALLATION_ID": "12abc"},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `$GITHUB_APP_INSTALLATION_ID="12abc" is not a number`,
+		},
+		{
+			name: "a malformed $GITHUB_APP_ID is ignored when --client-id names the App",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url}
+			},
+			env:         map[string]string{"GITHUB_APP_ID": "garbage"},
+			setupServer: tokenHandler("ghs_clientidwins"),
+			wantCode:    0,
+			wantStdout:  isExactly("ghs_clientidwins"),
+		},
+		{
+			name:       "a malformed $GITHUB_APP_ID is reported when nothing else names the App",
+			args:       func(string) []string { return []string{"jwt", "--key", keyPath} },
+			env:        map[string]string{"GITHUB_APP_ID": "garbage"},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `$GITHUB_APP_ID="garbage" is not a number`,
+		},
+		{
+			name: "the flag overrides a malformed environment ID",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url}
+			},
+			env:         map[string]string{"GITHUB_APP_INSTALLATION_ID": "12abc"},
+			setupServer: tokenHandler("ghs_flagwins"),
+			wantCode:    0,
+			wantStdout:  isExactly("ghs_flagwins"),
+		},
+		{
+			name: "a request GitHub rejects as invalid is not worth retrying",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url, "--repos", "nope"}
+			},
+			setupServer: statusHandler(http.StatusUnprocessableEntity),
+			wantCode:    exitUsage,
+			wantStdout:  isEmpty,
+			wantStderr:  "check --repos",
+		},
+		{
+			name: "exec of a command that does not exist is misuse",
+			args: func(url string) []string {
+				return []string{
+					"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99",
+					"--base-url", url, "--exec", "--", "githubauth-no-such-command",
+				}
+			},
+			setupServer: tokenHandler("ghs_unused"),
+			wantCode:    exitUsage,
+			wantStdout:  isEmpty,
+			wantStderr:  "running githubauth-no-such-command",
+		},
 	}
 
 	for _, tt := range tests {
@@ -482,12 +594,16 @@ func TestRun(t *testing.T) {
 			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
 			}
+			if tt.quietStderr && stderr.Len() != 0 {
+				t.Errorf("stderr = %q, want empty", stderr.String())
+			}
 		})
 	}
 }
 
-// TestCommandHelp covers the per-command help, which the flag package writes
-// to stderr and which exits 2 because -h is reported as a parse error.
+// TestCommandHelp covers the per-command help. Asking for it is not a failure,
+// so it exits 0 on stdout like "githubauth help", and an agent gets the help
+// rather than an error document.
 func TestCommandHelp(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -507,25 +623,34 @@ func TestCommandHelp(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			clearEnv(t)
+		for _, agent := range []string{"0", "1"} {
+			t.Run(tt.name+"/agent="+agent, func(t *testing.T) {
+				clearEnv(t)
+				t.Setenv("GITHUBAUTH_AGENT_MODE", agent)
 
-			var stdout, stderr bytes.Buffer
+				var stdout, stderr bytes.Buffer
 
-			if got := run([]string{tt.command, "-h"}, nil, &stdout, &stderr); got != 2 {
-				t.Errorf("run() = %d, want 2", got)
-			}
-
-			help := stderr.String()
-			for _, want := range tt.want {
-				if !strings.Contains(help, want) {
-					t.Errorf("help is missing %q:\n%s", want, help)
+				if got := run([]string{tt.command, "-h"}, nil, &stdout, &stderr); got != 0 {
+					t.Errorf("run() = %d, want 0", got)
 				}
-			}
-			if strings.Contains(help, "\n  -client-id") {
-				t.Error("help renders single-dash flags")
-			}
-		})
+				if stderr.Len() != 0 {
+					t.Errorf("stderr = %q, want empty", stderr.String())
+				}
+
+				help := stdout.String()
+				if strings.Contains(help, "githubauth.error") {
+					t.Errorf("help request reported as an error:\n%s", help)
+				}
+				for _, want := range tt.want {
+					if !strings.Contains(help, want) {
+						t.Errorf("help is missing %q:\n%s", want, help)
+					}
+				}
+				if strings.Contains(help, "\n  -client-id") {
+					t.Error("help renders single-dash flags")
+				}
+			})
+		}
 	}
 }
 

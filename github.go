@@ -22,9 +22,15 @@ const (
 	// message, so a misbehaving or hostile server cannot exhaust memory.
 	maxErrorBodyBytes = 64 << 10
 
-	// maxRetrySleep caps sleeps between retries so a misbehaving or hostile
-	// server cannot stall callers indefinitely via Retry-After.
+	// maxRetrySleep is the longest wait the client sleeps through before its one
+	// retry. A longer hint is returned to the caller instead: retrying before
+	// GitHub said to is bound to fail, and Token() would stall for nothing.
 	maxRetrySleep = 60 * time.Second
+
+	// maxRetryAfter caps RateLimitError.RetryAfter at GitHub's longest
+	// rate-limit window, so a hostile Retry-After cannot stall a caller that
+	// sleeps on it.
+	maxRetryAfter = time.Hour
 
 	// defaultThrottleBackoff is the fallback delay when GitHub returns 429
 	// without any retry hint header.
@@ -52,7 +58,7 @@ type RateLimitError struct {
 	StatusCode int
 
 	// RetryAfter is how long to wait before retrying, taken from Retry-After or
-	// X-RateLimit-Reset and capped at maxRetrySleep. It falls back to a
+	// X-RateLimit-Reset as GitHub sent it, capped at an hour. It falls back to a
 	// documented default when GitHub sends no usable hint. It is zero when
 	// GitHub says to retry immediately, or when the reset instant has already
 	// passed, so callers must treat zero as "retry now" rather than "no hint".
@@ -227,8 +233,8 @@ func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
 // createInstallationToken creates an installation access token for a GitHub App.
 // When retryOnThrottle is enabled, a single retry is performed on 429 or on 403
 // responses that are actually throttled — those carrying Retry-After, or
-// x-ratelimit-remaining: 0. The sleep is capped at maxRetrySleep and honors ctx
-// cancellation.
+// x-ratelimit-remaining: 0. It retries only when the wait is at most
+// maxRetrySleep, and the sleep honors ctx cancellation.
 //
 // API documentation: https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-an-installation-access-token-for-an-app
 func (c *githubClient) createInstallationToken(ctx context.Context, installationID int64, opts *InstallationTokenOptions) (*InstallationToken, error) {
@@ -255,12 +261,13 @@ func (c *githubClient) createInstallationToken(ctx context.Context, installation
 	}
 
 	var throttled *RateLimitError
-	if !c.retryOnThrottle || !errors.As(err, &throttled) {
+	if !c.retryOnThrottle || !errors.As(err, &throttled) || throttled.RetryAfter > maxRetrySleep {
 		return nil, err
 	}
 
+	// Both are wrapped so a cancelled wait still reads as rate limited.
 	if sleepErr := sleepCtx(ctx, throttled.RetryAfter); sleepErr != nil {
-		return nil, sleepErr
+		return nil, fmt.Errorf("%w: %w", sleepErr, err)
 	}
 
 	return c.doCreateInstallationToken(ctx, u.String(), bodyBytes)
@@ -313,8 +320,9 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 
 // throttleDelay inspects a non-2xx response and reports the retry hint GitHub
 // supplied. The bool is true when the response is considered retryable: any 429,
-// and a 403 only when it is a rate limit rather than a permission failure. The
-// returned duration is capped at maxRetrySleep. An unparseable header is treated
+// and a 403 only when it is a rate limit rather than a permission failure. A
+// hint already in the past yields zero, and one past maxRetryAfter is capped
+// there. An unparseable header is treated
 // as absent — a malformed hint must not silently flip a terminal 403 into a retry.
 func (c *githubClient) throttleDelay(resp *http.Response, body []byte) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusForbidden {
@@ -323,7 +331,7 @@ func (c *githubClient) throttleDelay(resp *http.Response, body []byte) (time.Dur
 
 	if v := resp.Header.Get("Retry-After"); v != "" {
 		if d, ok := parseRetryAfter(v, time.Now()); ok {
-			return capDelay(d), true
+			return min(max(d, 0), maxRetryAfter), true
 		}
 	}
 
@@ -333,7 +341,7 @@ func (c *githubClient) throttleDelay(resp *http.Response, body []byte) (time.Dur
 
 	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
 		if reset, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			return capDelay(time.Until(time.Unix(reset, 0))), true
+			return min(max(time.Until(time.Unix(reset, 0)), 0), maxRetryAfter), true
 		}
 	}
 
@@ -378,16 +386,6 @@ func parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
 		return t.Sub(now), true
 	}
 	return 0, false
-}
-
-func capDelay(d time.Duration) time.Duration {
-	if d > maxRetrySleep {
-		return maxRetrySleep
-	}
-	if d < 0 {
-		return 0
-	}
-	return d
 }
 
 // sleepCtx sleeps for d or until ctx is cancelled, whichever comes first.

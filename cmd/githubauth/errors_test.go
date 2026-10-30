@@ -65,6 +65,20 @@ func TestClassify(t *testing.T) {
 			wantSuggestion: "--installation",
 		},
 		{
+			name:           "a request GitHub rejects as invalid",
+			err:            &githubauth.APIError{StatusCode: http.StatusUnprocessableEntity},
+			wantCode:       exitUsage,
+			wantStatus:     http.StatusUnprocessableEntity,
+			wantSuggestion: "--repos",
+		},
+		{
+			name:           "a 404 may be the wrong GitHub",
+			err:            &githubauth.APIError{StatusCode: http.StatusNotFound},
+			wantCode:       exitNotFound,
+			wantStatus:     http.StatusNotFound,
+			wantSuggestion: "--base-url",
+		},
+		{
 			name:       "an unclassified status is a general failure",
 			err:        &githubauth.APIError{StatusCode: http.StatusInternalServerError},
 			wantCode:   exitFailure,

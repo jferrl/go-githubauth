@@ -6,10 +6,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -49,7 +52,7 @@ EXAMPLES
   vault kv get -field=pem secret/github-app |
     githubauth token --key - --installation 12345
 
-  # Run a command with the token in $GITHUB_TOKEN, printing it nowhere.
+  # Run a command with the token in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere.
   githubauth token --installation 12345 --exec -- gh pr list
 
 EXIT CODES
@@ -70,14 +73,17 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		_, _ = fmt.Fprint(stderr, rootHelp)
-		return exitUsage
-	}
-
 	// Agent mode is read before the flags, so a flag parse error is still
 	// reported as JSON when an agent is running.
 	out := output{agent: agentModeEnv()}
+
+	if len(args) == 0 {
+		if out.agent {
+			return report(usagef("missing command; run \"githubauth help\" for usage"), stdout, stderr, out)
+		}
+		_, _ = fmt.Fprint(stderr, rootHelp)
+		return exitUsage
+	}
 
 	var err error
 	switch args[0] {
@@ -95,7 +101,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err = unknownCommand(args[0])
 	}
 
-	if err != nil {
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		return report(err, stdout, stderr, out)
 	}
 	return exitOK
@@ -142,16 +148,21 @@ type appFlags struct {
 	key      string
 	exec     bool
 	out      *output
+	fs       *flag.FlagSet
+	// enterprise is set when the credential is for an Enterprise Server host,
+	// where gh reads its own pair of variables.
+	enterprise bool
 }
 
 func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
 	a.out = out
+	a.fs = fs
 
 	fs.StringVar(&a.clientID, "client-id", os.Getenv("GITHUB_APP_CLIENT_ID"), "App client ID, e.g. Iv1.1234567890abcdef ($GITHUB_APP_CLIENT_ID)")
 	fs.Int64Var(&a.appID, "app-id", envInt64("GITHUB_APP_ID"), "legacy numeric App ID, for an App with no client ID ($GITHUB_APP_ID)")
 	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM ($GITHUB_APP_PRIVATE_KEY)")
 	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token")
-	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN, printing it nowhere")
+	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere")
 	fs.BoolVar(&out.agent, "agent", out.agent, "report failures as one JSON document on stdout (on when a coding agent is detected)")
 }
 
@@ -174,7 +185,7 @@ func (a *appFlags) checkExec(argv []string) error {
 // to stdout.
 func (a *appFlags) emit(tok *oauth2.Token, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if a.exec {
-		return runWithToken(argv, tok, stdin, stdout, stderr)
+		return runWithToken(argv, tok, a.enterprise, stdin, stdout, stderr)
 	}
 	if err := write(stdout, tok, a.out.json); err != nil {
 		return err
@@ -191,6 +202,9 @@ func (a *appFlags) source(stdin io.Reader, opts ...githubauth.ApplicationTokenOp
 	case a.clientID != "" && a.appID != 0:
 		return nil, usagef("set --client-id or --app-id, not both")
 	case a.clientID == "" && a.appID == 0:
+		if err := badEnvNumber(a.fs, "app-id", "GITHUB_APP_ID"); err != nil {
+			return nil, err
+		}
 		return nil, usagef("missing App identifier: set --client-id, or --app-id for a legacy App")
 	case a.key == "":
 		return nil, usagef("missing private key: set --key to a file path, %q for stdin, or the PEM itself", "-")
@@ -217,7 +231,7 @@ func asCredential(src oauth2.TokenSource, err error) (oauth2.TokenSource, error)
 }
 
 func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
-	fs := newFlagSet("token", "Print an installation access token.", stderr, `  # Scope the token to two repositories.
+	fs := newFlagSet("token", "Print an installation access token.", `  # Scope the token to two repositories.
   githubauth token --installation 12345 --repos api,web
 
   # Keep the token out of the terminal: it only ever reaches the child.
@@ -234,18 +248,35 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	baseURL := fs.String("base-url", "", "API base URL, used verbatim (Enterprise Cloud with data residency)")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise Server URL, normalized the way GHES expects")
 
-	if err := fs.Parse(args); err != nil {
-		return usageError{err: err, reported: true}
+	if err := parseFlags(fs, args, out, stdout, stderr); err != nil {
+		return err
 	}
 	if err := app.checkExec(fs.Args()); err != nil {
 		return err
 	}
 	if *installation <= 0 {
+		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
+			return err
+		}
 		return usagef("missing installation ID: set --installation")
 	}
 	if *baseURL != "" && *enterpriseURL != "" {
 		return usagef("set --base-url or --enterprise-url, not both")
 	}
+	if err := checkURL("--base-url", *baseURL); err != nil {
+		return err
+	}
+	if err := checkURL("--enterprise-url", *enterpriseURL); err != nil {
+		return err
+	}
+	// An empty scope is no scope: GitHub would mint a token for every
+	// repository, the opposite of what passing --repos asked for.
+	names := splitRepos(*repos)
+	if isSet(fs, "repos") && len(names) == 0 {
+		return usagef("--repos names no repository; omit it for a token covering the whole installation")
+	}
+
+	app.enterprise = *enterpriseURL != ""
 
 	appSrc, err := app.source(stdin)
 	if err != nil {
@@ -259,7 +290,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	case *enterpriseURL != "":
 		opts = append(opts, githubauth.WithEnterpriseURL(*enterpriseURL))
 	}
-	if names := splitRepos(*repos); len(names) > 0 {
+	if len(names) > 0 {
 		opts = append(opts, githubauth.WithInstallationTokenOptions(&githubauth.InstallationTokenOptions{
 			Repositories: names,
 		}))
@@ -273,10 +304,11 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 }
 
 func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
-	fs := newFlagSet("jwt", "Print the App JWT, for the few endpoints that take one.", stderr, `  # A JWT valid for five minutes instead of ten.
+	fs := newFlagSet("jwt", "Print the App JWT, for the few endpoints that take one.", `  # A JWT valid for five minutes instead of ten.
   githubauth jwt --client-id Iv1.abc --key app.pem --expiry 5m
 
   # List the App's installations without the JWT reaching the terminal.
+  # Not through gh: it sends "token", and GitHub takes a JWT only as "Bearer".
   githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`)
 
 	var app appFlags
@@ -284,11 +316,16 @@ func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *outpu
 
 	expiry := fs.Duration("expiry", 0, "JWT lifetime, over 90s and up to 10m (default 10m)")
 
-	if err := fs.Parse(args); err != nil {
-		return usageError{err: err, reported: true}
+	if err := parseFlags(fs, args, out, stdout, stderr); err != nil {
+		return err
 	}
 	if err := app.checkExec(fs.Args()); err != nil {
 		return err
+	}
+	// The library falls back to 10m for anything out of range, which would
+	// hand a caller who asked for a short-lived JWT a long-lived one.
+	if isSet(fs, "expiry") && (*expiry <= 90*time.Second || *expiry > githubauth.DefaultApplicationTokenExpiration) {
+		return usagef("--expiry %s is out of range: it must be over 90s and at most 10m", *expiry)
 	}
 
 	var opts []githubauth.ApplicationTokenOpt
@@ -310,15 +347,75 @@ func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *outpu
 
 // newFlagSet gives every command the same help layout: what it does, how it is
 // called, its flags, then examples, which is the part people actually read.
-func newFlagSet(name, summary string, stderr io.Writer, examples string) *flag.FlagSet {
+func newFlagSet(name, summary, examples string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "%s\n\nUSAGE\n  githubauth %s [flags]\n\nFLAGS\n", summary, name)
-		printFlags(stderr, fs)
-		_, _ = fmt.Fprintf(stderr, "\nEXAMPLES\n%s\n", examples)
+		w := fs.Output()
+		_, _ = fmt.Fprintf(w, "%s\n\nUSAGE\n  githubauth %s [flags]\n\nFLAGS\n", summary, name)
+		printFlags(w, fs)
+		_, _ = fmt.Fprintf(w, "\nEXAMPLES\n%s\n", examples)
 	}
 	return fs
+}
+
+// parseFlags holds back the flag package's own messages: under --json or agent
+// mode the JSON document must be the only rendering of a failure. A help
+// request is not a failure, so it goes to stdout like "githubauth help" and
+// returns flag.ErrHelp for run to exit 0 on.
+func parseFlags(fs *flag.FlagSet, args []string, out *output, stdout, stderr io.Writer) error {
+	var diag bytes.Buffer
+	fs.SetOutput(&diag)
+
+	err := fs.Parse(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		_, _ = diag.WriteTo(stdout)
+		return err
+	case err != nil:
+		if !out.json && !out.agent {
+			_, _ = diag.WriteTo(stderr)
+		}
+		return usageError{err: err, reported: true}
+	}
+	return nil
+}
+
+// badEnvNumber explains a missing numeric flag whose environment fallback was
+// set but malformed, which would otherwise read as never set at all.
+func badEnvNumber(fs *flag.FlagSet, name, key string) error {
+	if isSet(fs, name) {
+		return nil
+	}
+	if v := os.Getenv(key); v != "" {
+		if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+			return usagef("$%s=%q is not a number", key, v)
+		}
+	}
+	return nil
+}
+
+// isSet reports whether name was given on the command line.
+func isSet(fs *flag.FlagSet, name string) bool {
+	var set bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// checkURL rejects a base URL the library could only fail on after the key is
+// read, which would exit 1 and suggest retrying an invocation that cannot work.
+func checkURL(name, v string) error {
+	if v == "" {
+		return nil
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return usagef("%s %q must be an absolute http(s) URL", name, v)
+	}
+	return nil
 }
 
 // printFlags lists flags as "--name type", the spelling used everywhere else
@@ -388,8 +485,8 @@ func splitRepos(v string) []string {
 	return out
 }
 
-// envInt64 ignores a malformed value so the flag's own error reporting
-// handles it, rather than failing before the flags are parsed.
+// envInt64 ignores a malformed value here, before the flags are parsed;
+// badEnvNumber reports it where the value would have been used.
 func envInt64(key string) int64 {
 	n, _ := strconv.ParseInt(os.Getenv(key), 10, 64)
 	return n
