@@ -50,6 +50,10 @@ type failure struct {
 	reported bool
 }
 
+// wrongHostHint covers the other way to earn a 401 or 404: asking a GitHub
+// where the App does not exist.
+const wrongHostHint = "If --base-url or --enterprise-url is set, check it is the GitHub instance the App was created on."
+
 // classify maps an error to its exit code and the advice that goes with it.
 // Every branch ends in a suggestion naming a command or a flag.
 func classify(err error) failure {
@@ -94,10 +98,16 @@ func classify(err error) failure {
 	if errors.As(err, &apiErr) {
 		f := failure{summary: err.Error(), code: exitFailure, statusCode: apiErr.StatusCode}
 		switch apiErr.StatusCode {
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			f.code = exitUsage
+			f.suggestions = []string{
+				"GitHub rejected the request itself: check --repos, every name must be a repository the installation can access.",
+			}
 		case http.StatusUnauthorized:
 			f.code = exitCredentials
 			f.suggestions = []string{
-				"GitHub rejected the App JWT: check that --key is the current key for --client-id and that the clock is right.",
+				"GitHub rejected the App JWT: check that --key is the current key for the App in --client-id (or --app-id) and that the clock is right.",
+				wrongHostHint,
 			}
 		case http.StatusForbidden:
 			f.code = exitCredentials
@@ -108,7 +118,8 @@ func classify(err error) failure {
 			f.code = exitNotFound
 			f.suggestions = []string{
 				"Check --installation: the App may not be installed on that account.",
-				`List the App's installations: curl -H "Authorization: Bearer $(githubauth jwt)" https://api.github.com/app/installations`,
+				`List the App's installations: githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`,
+				wrongHostHint,
 			}
 		}
 		return f

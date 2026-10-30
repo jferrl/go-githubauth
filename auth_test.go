@@ -1424,6 +1424,30 @@ func Test_WithHTTPClient_CachesApplicationToken(t *testing.T) {
 	}
 }
 
+// Test_cachedSource_KeepsTheSkew proves the JWT used for the installation
+// exchange honors the refresh skew. oauth2.ReuseTokenSource held it until 10s
+// before exp, so a JWT inside DefaultExpirySkew still went out to GitHub.
+func Test_cachedSource_KeepsTheSkew(t *testing.T) {
+	src := &countingSource{mkToken: func(int) *oauth2.Token {
+		return &oauth2.Token{AccessToken: "jwt", Expiry: time.Now().Add(20 * time.Second)}
+	}}
+
+	ts := cachedSource(src)
+	for range 3 {
+		if _, err := ts.Token(); err != nil {
+			t.Fatalf("Token() err = %v", err)
+		}
+	}
+	if got := src.callCount(); got != 3 {
+		t.Errorf("upstream calls = %d, want 3: a JWT inside the skew must not be reused", got)
+	}
+
+	skewed := ReuseTokenSourceWithSkew(nil, src, time.Minute)
+	if got := cachedSource(skewed); got != skewed {
+		t.Error("cachedSource wrapped a source that already caches with its own skew")
+	}
+}
+
 // Test_NewInstallationTokenSource_RejectsZeroID proves a zero installation ID is
 // refused as a configuration error instead of being sent to GitHub as
 // /app/installations/0/access_tokens, which can only 404. A zero App ID is

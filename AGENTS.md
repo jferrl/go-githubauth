@@ -10,8 +10,8 @@ The CLI prints a live credential to stdout. An installation token is valid for a
 hour, and anything that captured your output still has it for that hour: a
 transcript, a CI log, a scrollback buffer.
 
-Prefer `--exec`, which puts the token in the child's `$GITHUB_TOKEN` and prints it
-nowhere:
+Prefer `--exec`, which puts the token in the child's `$GITHUB_TOKEN` and
+`$GH_TOKEN` and prints it nowhere:
 
 ```bash
 githubauth token --installation 12345 --exec -- gh pr list

@@ -739,9 +739,10 @@ func Test_createInstallationToken_XRateLimitReset(t *testing.T) {
 	}
 }
 
-func Test_throttleDelay_CapsAtMaxRetrySleep(t *testing.T) {
-	// Verify directly at the throttleDelay boundary so the assertion is
-	// deterministic and fast (no real sleep).
+// Test_throttleDelay_KeepsGitHubsFullWait pins RetryAfter to GitHub's own hint.
+// Capping it told callers running their own backoff to come back long before
+// GitHub would accept the request.
+func Test_throttleDelay_KeepsGitHubsFullWait(t *testing.T) {
 	c := newGitHubClient(&http.Client{})
 	resp := &http.Response{
 		StatusCode: http.StatusTooManyRequests,
@@ -751,8 +752,8 @@ func Test_throttleDelay_CapsAtMaxRetrySleep(t *testing.T) {
 	if !ok {
 		t.Fatalf("throttleDelay ok = false, want true")
 	}
-	if d != maxRetrySleep {
-		t.Errorf("delay = %v, want %v", d, maxRetrySleep)
+	if d != 600*time.Second {
+		t.Errorf("delay = %v, want 10m0s", d)
 	}
 
 	resp = &http.Response{
@@ -763,8 +764,50 @@ func Test_throttleDelay_CapsAtMaxRetrySleep(t *testing.T) {
 	if !ok {
 		t.Fatalf("throttleDelay ok = false, want true")
 	}
-	if d != maxRetrySleep {
-		t.Errorf("HTTP-date delay = %v, want %v", d, maxRetrySleep)
+	if d < 59*time.Minute {
+		t.Errorf("HTTP-date delay = %v, want about 1h", d)
+	}
+
+	// A caller may sleep on RetryAfter, so a hostile hint is capped.
+	resp = &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"31536000"}},
+	}
+	if d, _ = c.throttleDelay(resp, nil); d != maxRetryAfter {
+		t.Errorf("a year-long hint gave delay = %v, want %v", d, maxRetryAfter)
+	}
+}
+
+// Test_createInstallationToken_LongWaitIsNotSleptThrough proves a hint past
+// maxRetrySleep returns at once with the full wait, instead of sleeping 60s
+// for a retry GitHub is bound to refuse.
+func Test_createInstallationToken_LongWaitIsNotSleptThrough(t *testing.T) {
+	var attempts atomic.Int32
+	reset := strconv.FormatInt(time.Now().Add(40*time.Minute).Unix(), 10)
+	server := httptest.NewServer(throttleHandler(t, []throttleResponse{
+		{
+			status:  http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+			body:    `{"message":"API rate limit exceeded"}`,
+		},
+	}, &attempts))
+	defer server.Close()
+
+	start := time.Now()
+	_, err := newClientForServer(t, server).createInstallationToken(context.Background(), 12345, nil)
+
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("err = %v, want *RateLimitError", err)
+	}
+	if rle.RetryAfter < 39*time.Minute {
+		t.Errorf("RetryAfter = %v, want about 40m", rle.RetryAfter)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("elapsed = %v, want an immediate return", elapsed)
 	}
 }
 
@@ -789,6 +832,9 @@ func Test_createInstallationToken_ContextCancelledDuringSleep(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("err = %v, want it to still wrap ErrRateLimited", err)
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("elapsed = %v, expected ctx cancellation to abort sleep quickly", elapsed)
