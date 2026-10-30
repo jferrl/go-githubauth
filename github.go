@@ -155,6 +155,32 @@ type InstallationPermissions struct {
 	OrganizationSelfHostedRunners   *string `json:"organization_self_hosted_runners,omitempty"`
 	OrganizationUserBlocking        *string `json:"organization_user_blocking,omitempty"`
 	TeamDiscussions                 *string `json:"team_discussions,omitempty"`
+
+	// Other holds permissions with no field above, keyed by GitHub's name, such
+	// as "installation_repositories", so one GitHub adds can be requested before
+	// a field exists. Names are sent as given, so GitHub has the last word on a
+	// misspelt one. Naming a permission whose field is also set is an error.
+	Other map[string]string `json:"-"`
+}
+
+// MarshalJSON sends Other alongside the fields.
+func (p InstallationPermissions) MarshalJSON() ([]byte, error) {
+	type fields InstallationPermissions
+	// Only *string fields, which always marshal.
+	b, _ := json.Marshal(fields(p))
+	if len(p.Other) == 0 {
+		return b, nil
+	}
+
+	all := make(map[string]string, len(p.Other))
+	_ = json.Unmarshal(b, &all)
+	for name, level := range p.Other {
+		if _, ok := all[name]; ok {
+			return nil, fmt.Errorf("permission %q is set both as a field and in Other", name)
+		}
+		all[name] = level
+	}
+	return json.Marshal(all)
 }
 
 // InstallationToken represents a GitHub App installation token.
@@ -247,9 +273,7 @@ func (c *githubClient) createInstallationToken(ctx context.Context, installation
 	if opts != nil {
 		var err error
 		bodyBytes, err = json.Marshal(opts)
-		// Unreachable guard: InstallationTokenOptions holds only strings,
-		// int64s and pointers to them, none of which json.Marshal can reject.
-		// Kept so a future field that can fail is not silently sent as no body.
+		// A permission named both as a field and in Other.
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
@@ -333,6 +357,43 @@ func (c *githubClient) revokeInstallationToken(ctx context.Context) error {
 		return nil
 	}
 	return c.responseError(resp)
+}
+
+// findInstallationID looks up the App's installation on owner. The users
+// endpoint answers for organizations too, which actions/create-github-app-token
+// relies on as well.
+func (c *githubClient) findInstallationID(ctx context.Context, owner string) (int64, error) {
+	// JoinPath takes escaped elements: a raw "%" would leave the path at the
+	// base URL, and an escaped slash would add a segment.
+	u := c.baseURL.JoinPath("users", url.PathEscape(owner), "installation")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, c.responseError(resp)
+	}
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&installation); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+	// Minting with 0 would fail as a missing ID and hide this answer.
+	if installation.ID <= 0 {
+		return 0, fmt.Errorf("the installation for %q came back without an ID", owner)
+	}
+	return installation.ID, nil
 }
 
 // responseError turns a rejected response into a *RateLimitError when GitHub

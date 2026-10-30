@@ -16,7 +16,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -416,6 +419,67 @@ func TestRun(t *testing.T) {
 			wantCode:    12,
 		},
 		{
+			name: "owner and installation together are misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--owner", "acme"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "set --installation or --owner, not both",
+		},
+		{
+			name: "an owner naming a repository is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--owner", "acme/api"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--owner "acme/api" is a repository`,
+		},
+		{
+			name: "a dot segment is not an owner",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--owner", ".."}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--owner ".." is not an account`,
+		},
+		{
+			// The command never ran, so the failure is githubauth's own and its
+			// one JSON report has to carry the token it left valid.
+			name: "under an agent a failed revocation joins the failure report",
+			args: func(url string) []string {
+				return []string{
+					"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99",
+					"--base-url", url, "--agent", "--exec", "--", "githubauth-no-such-command",
+				}
+			},
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodDelete {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_unrevoked", "expires_at": time.Now().Add(time.Hour)})
+				}))
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains("the token was not revoked"),
+			quietStderr: true,
+		},
+		{
+			name: "an owner the App is not installed on exits as not installed",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--owner", "acme", "--base-url", url}
+			},
+			setupServer: statusHandler(http.StatusNotFound),
+			wantCode:    exitNotFound,
+			wantStdout:  isEmpty,
+			wantStderr:  "Check --installation or --owner",
+		},
+		{
 			name: "keep without exec is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--keep"}
@@ -664,8 +728,9 @@ func TestRun(t *testing.T) {
 	}
 }
 
-// TestTokenRequests checks what reaches GitHub: the scope asked for, and the
-// revocation --exec sends once the command exits, whatever it exited with.
+// TestTokenRequests checks what reaches GitHub: the installation and scope
+// asked for, and the revocation --exec sends once the command exits, whatever
+// it exited with.
 func TestTokenRequests(t *testing.T) {
 	keyPath := writeFile(t, "app.pem", testKeyPEM(t))
 
@@ -674,11 +739,24 @@ func TestTokenRequests(t *testing.T) {
 		args       []string
 		code       string
 		revokeWith int
-		wantCode   int
+		// termDuringRevoke sends githubauth a SIGTERM while the revocation is
+		// in flight.
+		termDuringRevoke bool
+		wantCode         int
+		wantMint   string
 		wantBody   string
 		wantRevoke bool
 		wantStderr string
 	}{
+		{
+			name:     "the installation comes from the environment",
+			wantMint: "/app/installations/99/access_tokens",
+		},
+		{
+			name:     "an owner is looked up, ahead of the environment",
+			args:     []string{"--owner", "acme"},
+			wantMint: "/app/installations/123/access_tokens",
+		},
 		{
 			name:     "repos and permissions go in one request",
 			args:     []string{"--repos", "api", "--permissions", "contents:read, pull_requests:write"},
@@ -709,6 +787,13 @@ func TestTokenRequests(t *testing.T) {
 			code: "0",
 		},
 		{
+			name:             "a SIGTERM during the revocation does not stop it",
+			args:             []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code:             "0",
+			termDuringRevoke: true,
+			wantRevoke:       true,
+		},
+		{
 			name:       "a token already dead is not reported as valid",
 			args:       []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
 			code:       "0",
@@ -731,24 +816,57 @@ func TestTokenRequests(t *testing.T) {
 			t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
 			t.Setenv("GITHUBAUTH_EXEC_CODE", tt.code)
 
-			var body, revokedWith string
+			t.Setenv("GITHUB_APP_INSTALLATION_ID", "99")
+			if tt.termDuringRevoke && runtime.GOOS == "windows" {
+				t.Skip("no signals on windows")
+			}
+
+			// events orders the child's use of the token against its revocation.
+			var mu sync.Mutex
+			var events []string
+			record := func(e string) {
+				mu.Lock()
+				defer mu.Unlock()
+				events = append(events, e)
+			}
+
+			var mint, body, revokedWith string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodDelete && r.URL.Path == "/installation/token" {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/child":
+					record("child used " + r.Header.Get("Authorization"))
+					return
+				case r.Method == http.MethodDelete && r.URL.Path == "/installation/token":
+					record("revoked")
 					revokedWith = r.Header.Get("Authorization")
+					if tt.termDuringRevoke {
+						p, _ := os.FindProcess(os.Getpid())
+						_ = p.Signal(syscall.SIGTERM)
+						// Signal delivery is asynchronous: let it land before
+						// the revocation returns.
+						time.Sleep(200 * time.Millisecond)
+					}
 					w.WriteHeader(cmp.Or(tt.revokeWith, http.StatusNoContent))
+					return
+				case r.Method == http.MethodGet && r.URL.Path == "/users/acme/installation":
+					_, _ = io.WriteString(w, `{"id":123}`)
 					return
 				}
 				b, _ := io.ReadAll(r.Body)
-				body = string(b)
+				mint, body = r.URL.Path, string(b)
 				w.WriteHeader(http.StatusCreated)
 				_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_minted", "expires_at": time.Now().Add(time.Hour)})
 			}))
 			defer srv.Close()
+			t.Setenv("GITHUBAUTH_EXEC_CALL", srv.URL+"/child")
 
-			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", srv.URL}, tt.args...)
+			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--base-url", srv.URL}, tt.args...)
 			var stdout, stderr bytes.Buffer
 			if got := run(args, strings.NewReader(""), &stdout, &stderr); got != tt.wantCode {
 				t.Errorf("run() = %d, want %d (stderr: %s)", got, tt.wantCode, stderr.String())
+			}
+			if tt.wantMint != "" && mint != tt.wantMint {
+				t.Errorf("minted at %s, want %s", mint, tt.wantMint)
 			}
 			if tt.wantBody != "" && body != tt.wantBody {
 				t.Errorf("request body = %s, want %s", body, tt.wantBody)
@@ -758,6 +876,13 @@ func TestTokenRequests(t *testing.T) {
 			}
 			if tt.wantRevoke && revokedWith != "Bearer ghs_minted" {
 				t.Errorf("revoked with Authorization %q, want the minted token", revokedWith)
+			}
+			// A command that ran used the token before it was revoked, not after.
+			mu.Lock()
+			got := strings.Join(events, ", ")
+			mu.Unlock()
+			if tt.wantRevoke && tt.code != "" && got != "child used Bearer ghs_minted, revoked" {
+				t.Errorf("events = %q, want the child's use of the token before its revocation", got)
 			}
 			if !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)

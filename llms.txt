@@ -19,8 +19,9 @@ Core API (package `githubauth`):
 - `NewApplicationTokenSourceFromSigner(id, signer crypto.Signer, opts...) (oauth2.TokenSource, error)` — App JWT source backed by an external RSA signer (KMS/HSM/Vault/ssh-agent).
 - `APIError{StatusCode, Message}` — concrete error for a request GitHub rejected for any reason other than throttling. Extract with `errors.As` to tell a refused credential (401/403) from an installation that does not exist (404) without matching on the message.
 - `RateLimitError{StatusCode, RetryAfter, Message}` — concrete error for a throttled request; extract with `errors.As`. Unwraps to `ErrRateLimited`, so `errors.Is` keeps working. A 403 permission failure matches neither.
-- `NewInstallationTokenSource(installationID int64, appSource oauth2.TokenSource, opts...) oauth2.TokenSource` — exchanges the App JWT for an installation token. Options: `WithEnterpriseURL(url)` (GHES, appends /api/v3/), `WithBaseURL(url)` (verbatim; GHEC data residency or httptest), `WithHTTPClient(c)`, `WithRetryOnThrottle(bool)`, `WithInstallationExpirySkew(d)`, `WithInstallationTokenOptions(o)`, `WithContext(ctx)`.
+- `NewInstallationTokenSource(installationID int64, appSource oauth2.TokenSource, opts...) oauth2.TokenSource` — exchanges the App JWT for an installation token. Options: `WithEnterpriseURL(url)` (GHES, appends /api/v3/), `WithBaseURL(url)` (verbatim; GHEC data residency or httptest), `WithHTTPClient(c)`, `WithRetryOnThrottle(bool)`, `WithInstallationExpirySkew(d)`, `WithInstallationTokenOptions(o)` (`o.Permissions.Other` names a permission the struct has no field for), `WithContext(ctx)`.
 - `RevokeInstallationToken(ctx, token string, opts...) error` — revokes an installation token before it expires, so a leaked copy stops working. `WithBaseURL`, `WithEnterpriseURL` and `WithHTTPClient` apply.
+- `FindInstallationID(ctx, appSource, owner string, opts...) (int64, error)` — the App's installation ID on a user or organization, for when only the account is known. A 404 means the App is not installed there.
 - `NewPersonalAccessTokenSource(token string) oauth2.TokenSource` — classic (`ghp_...`) or fine-grained (`github_pat_...`) PATs.
 - `ReuseTokenSourceWithSkew(t, src, skew) oauth2.TokenSource` — caching wrapper that refreshes `skew` before expiry (both constructors apply it with a 30s default, eliminating in-flight 401s near expiry).
 
@@ -59,7 +60,7 @@ Command line (`githubauth`, from `cmd/githubauth`):
 
 The same credentials without writing Go. Install with `go install github.com/jferrl/go-githubauth/cmd/githubauth@latest`, `brew install jferrl/tap/githubauth`, or a release binary.
 
-- `githubauth token [flags]` — print an installation access token. Flags: `--installation`, `--repos`, `--permissions` (e.g. `contents:read,pull_requests:write`), `--keep`, `--base-url`, `--enterprise-url`.
+- `githubauth token [flags]` — print an installation access token. Flags: `--installation` (or `--owner` to look it up), `--repos`, `--permissions` (e.g. `contents:read,pull_requests:write`), `--keep`, `--base-url`, `--enterprise-url`.
 - `githubauth jwt [flags]` — print the App JWT, for the endpoints that take one. Flags: `--expiry`.
 - Shared flags: `--client-id` (or `--app-id` for a legacy App), `--key`, `--json`, `--exec`, `--agent`.
 - Environment fallbacks for every flag: `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID`. A configured environment reduces the call to `githubauth token`.

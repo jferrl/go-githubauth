@@ -101,7 +101,7 @@ func classify(err error) failure {
 		case http.StatusBadRequest, http.StatusUnprocessableEntity:
 			f.code = exitUsage
 			f.suggestions = []string{
-				"GitHub rejected the request itself: check --repos, every name must be a repository the installation can access.",
+				"GitHub rejected the request itself: check --repos, every name must be a repository the installation can access, and --permissions, every one must be granted to the App.",
 			}
 		case http.StatusUnauthorized:
 			f.code = exitCredentials
@@ -117,7 +117,7 @@ func classify(err error) failure {
 		case http.StatusNotFound:
 			f.code = exitNotFound
 			f.suggestions = []string{
-				"Check --installation: the App may not be installed on that account.",
+				"Check --installation or --owner: the App may not be installed on that account.",
 				`List the App's installations: githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`,
 				wrongHostHint,
 			}

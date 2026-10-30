@@ -46,7 +46,7 @@ githubauth help
 
 Flags shared by both commands: `--client-id` (or `--app-id` for a legacy App),
 `--key`, `--json`, `--exec`, `--agent`. `token` adds `--installation`, `--repos`,
-`--permissions`, `--keep`, `--base-url`, `--enterprise-url`. `jwt` adds `--expiry`.
+`--owner`, `--permissions`, `--keep`, `--base-url`, `--enterprise-url`. `jwt` adds `--expiry`.
 
 Every flag falls back to an environment variable — `GITHUB_APP_CLIENT_ID`,
 `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` — so a
@@ -80,7 +80,7 @@ Under `--json`, or when a coding agent is detected, a failure is one JSON
 document on **stdout** and stderr stays empty:
 
 ```json
-{"type":"githubauth.error","schema_version":"1","error":{"summary":"GitHub API returned status 404: {\"message\":\"Not Found\"}","exit_code":5,"status_code":404,"suggestions":["Check --installation: the App may not be installed on that account."]}}
+{"type":"githubauth.error","schema_version":"1","error":{"summary":"GitHub API returned status 404: {\"message\":\"Not Found\"}","exit_code":5,"status_code":404,"suggestions":["Check --installation or --owner: the App may not be installed on that account."]}}
 ```
 
 Check `type` and `schema_version` before reading the rest.
@@ -107,7 +107,9 @@ httpClient := oauth2.NewClient(context.Background(), installSrc)
 is inferred. Both sources cache and refresh 30s before expiry.
 
 `RevokeInstallationToken(ctx, token)` ends an installation token before its hour
-is up.
+is up. `FindInstallationID(ctx, appSrc, owner)` finds the installation on a user
+or organization when only the account is known. `InstallationPermissions.Other`
+requests a permission GitHub added after the struct was last updated.
 
 Errors worth branching on: `*githubauth.RateLimitError` (carries `RetryAfter`,
 unwraps to `ErrRateLimited`) and `*githubauth.APIError` (carries `StatusCode`).
@@ -129,7 +131,8 @@ Full API surface: [`llms.txt`](llms.txt). Runnable examples: pkg.go.dev.
   table-driven. Follow the shape already in the file you are editing.
 - **Scope**: this library authenticates and stops there. API coverage belongs to
   [go-github](https://github.com/google/go-github), which it pairs with — do not
-  add installation, repository, or organization helpers here.
+  add installation, repository, or organization helpers here, beyond what minting
+  or ending a token needs (finding the installation ID, revoking the token).
 - Exported symbols keep a doc comment opening with the symbol name. Comments say
   why, in a sentence or two.
 - The exit codes and the `githubauth.error` envelope are a public contract.
