@@ -416,6 +416,34 @@ func TestRun(t *testing.T) {
 			wantCode:    12,
 		},
 		{
+			name: "owner and installation together are misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--owner", "acme"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "set --installation or --owner, not both",
+		},
+		{
+			name: "an owner naming a repository is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--owner", "acme/api"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--owner "acme/api" is a repository`,
+		},
+		{
+			name: "an owner the App is not installed on exits as not installed",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--owner", "acme", "--base-url", url}
+			},
+			setupServer: statusHandler(http.StatusNotFound),
+			wantCode:    exitNotFound,
+			wantStdout:  isEmpty,
+			wantStderr:  "Check --installation or --owner",
+		},
+		{
 			name: "keep without exec is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--keep"}
@@ -664,8 +692,9 @@ func TestRun(t *testing.T) {
 	}
 }
 
-// TestTokenRequests checks what reaches GitHub: the scope asked for, and the
-// revocation --exec sends once the command exits, whatever it exited with.
+// TestTokenRequests checks what reaches GitHub: the installation and scope
+// asked for, and the revocation --exec sends once the command exits, whatever
+// it exited with.
 func TestTokenRequests(t *testing.T) {
 	keyPath := writeFile(t, "app.pem", testKeyPEM(t))
 
@@ -675,10 +704,20 @@ func TestTokenRequests(t *testing.T) {
 		code       string
 		revokeWith int
 		wantCode   int
+		wantMint   string
 		wantBody   string
 		wantRevoke bool
 		wantStderr string
 	}{
+		{
+			name:     "the installation comes from the environment",
+			wantMint: "/app/installations/99/access_tokens",
+		},
+		{
+			name:     "an owner is looked up, ahead of the environment",
+			args:     []string{"--owner", "acme"},
+			wantMint: "/app/installations/123/access_tokens",
+		},
 		{
 			name:     "repos and permissions go in one request",
 			args:     []string{"--repos", "api", "--permissions", "contents:read, pull_requests:write"},
@@ -731,24 +770,33 @@ func TestTokenRequests(t *testing.T) {
 			t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
 			t.Setenv("GITHUBAUTH_EXEC_CODE", tt.code)
 
-			var body, revokedWith string
+			t.Setenv("GITHUB_APP_INSTALLATION_ID", "99")
+
+			var mint, body, revokedWith string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodDelete && r.URL.Path == "/installation/token" {
+				switch {
+				case r.Method == http.MethodDelete && r.URL.Path == "/installation/token":
 					revokedWith = r.Header.Get("Authorization")
 					w.WriteHeader(cmp.Or(tt.revokeWith, http.StatusNoContent))
 					return
+				case r.Method == http.MethodGet && r.URL.Path == "/users/acme/installation":
+					_, _ = io.WriteString(w, `{"id":123}`)
+					return
 				}
 				b, _ := io.ReadAll(r.Body)
-				body = string(b)
+				mint, body = r.URL.Path, string(b)
 				w.WriteHeader(http.StatusCreated)
 				_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_minted", "expires_at": time.Now().Add(time.Hour)})
 			}))
 			defer srv.Close()
 
-			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", srv.URL}, tt.args...)
+			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--base-url", srv.URL}, tt.args...)
 			var stdout, stderr bytes.Buffer
 			if got := run(args, strings.NewReader(""), &stdout, &stderr); got != tt.wantCode {
 				t.Errorf("run() = %d, want %d (stderr: %s)", got, tt.wantCode, stderr.String())
+			}
+			if tt.wantMint != "" && mint != tt.wantMint {
+				t.Errorf("minted at %s, want %s", mint, tt.wantMint)
 			}
 			if tt.wantBody != "" && body != tt.wantBody {
 				t.Errorf("request body = %s, want %s", body, tt.wantBody)

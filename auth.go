@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -477,6 +479,24 @@ func RevokeInstallationToken(ctx context.Context, token string, opts ...Installa
 		return i.configErr
 	}
 	return i.client.revokeInstallationToken(ctx)
+}
+
+// FindInstallationID returns the ID of the App's installation on owner, a user
+// or organization login, for a caller who knows the account but not the ID. src
+// is the App's JWT source. WithBaseURL, WithEnterpriseURL and WithHTTPClient
+// apply as they do to NewInstallationTokenSource. The other options are ignored.
+//
+// See https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#get-a-user-installation-for-the-authenticated-app
+func FindInstallationID(ctx context.Context, src oauth2.TokenSource, owner string, opts ...InstallationTokenSourceOpt) (int64, error) {
+	// A slash or dot segment would move the request to another endpoint.
+	if owner == "" || owner == "." || owner == ".." || strings.Contains(owner, "/") {
+		return 0, fmt.Errorf("invalid owner %q: want a user or organization login", owner)
+	}
+	i := newInstallationTokenSource(0, src, opts)
+	if i.configErr != nil {
+		return 0, i.configErr
+	}
+	return i.client.findInstallationID(ctx, owner)
 }
 
 // newInstallationTokenSource applies opts to a source whose requests src

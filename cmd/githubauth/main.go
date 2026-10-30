@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -233,7 +234,10 @@ func asCredential(src oauth2.TokenSource, err error) (oauth2.TokenSource, error)
 }
 
 func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
-	fs := newFlagSet("token", "Print an installation access token.", `  # Scope the token to two repositories, with read access to their contents.
+	fs := newFlagSet("token", "Print an installation access token.", `  # Find the installation from the account it is on.
+  githubauth token --owner acme
+
+  # Scope the token to two repositories, with read access to their contents.
   githubauth token --installation 12345 --repos api,web --permissions contents:read
 
   # Keep the token out of the terminal: it only ever reaches the child, and is
@@ -251,6 +255,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 
 	installation := fs.Int64("installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
 	repos := fs.String("repos", "", "comma-separated repository names to scope the token to")
+	owner := fs.String("owner", "", "user or organization the App is installed on, to look up the installation instead of passing --installation")
 	permissions := fs.String("permissions", "", "comma-separated name:level pairs to scope the token to, e.g. contents:read,pull_requests:write")
 	keep := fs.Bool("keep", false, "under --exec, leave the token valid when the command exits instead of revoking it")
 	baseURL := fs.String("base-url", "", "API base URL, used verbatim (Enterprise Cloud with data residency)")
@@ -265,11 +270,16 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	if *keep && !app.exec {
 		return usagef("--keep applies only under --exec, which revokes the token when the command exits")
 	}
-	if *installation <= 0 {
+	switch {
+	case *owner != "" && isSet(fs, "installation"):
+		return usagef("set --installation or --owner, not both")
+	case strings.Contains(*owner, "/"):
+		return usagef("--owner %q is a repository: pass its account as --owner and the repository as --repos", *owner)
+	case *owner == "" && *installation <= 0:
 		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
 			return err
 		}
-		return usagef("missing installation ID: set --installation")
+		return usagef("missing installation ID: set --installation, or --owner to look it up")
 	}
 	if *baseURL != "" && *enterpriseURL != "" {
 		return usagef("set --base-url or --enterprise-url, not both")
@@ -308,6 +318,14 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	case *enterpriseURL != "":
 		urlOpts = append(urlOpts, githubauth.WithEnterpriseURL(*enterpriseURL))
 	}
+
+	id := *installation
+	if *owner != "" {
+		if id, err = githubauth.FindInstallationID(context.Background(), appSrc, *owner, urlOpts...); err != nil {
+			return err
+		}
+	}
+
 	opts := slices.Clone(urlOpts)
 	if len(names) > 0 || perms != nil {
 		opts = append(opts, githubauth.WithInstallationTokenOptions(&githubauth.InstallationTokenOptions{
@@ -316,7 +334,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		}))
 	}
 
-	tok, err := githubauth.NewInstallationTokenSource(*installation, appSrc, opts...).Token()
+	tok, err := githubauth.NewInstallationTokenSource(id, appSrc, opts...).Token()
 	if err != nil {
 		return err
 	}
@@ -515,7 +533,9 @@ func splitRepos(v string) []string {
 // rather than as a 422 that does not say which one.
 //
 // shortcut: only the names InstallationPermissions has fields for are known, so a
-// newer GitHub permission is refused until the struct gains it.
+// newer GitHub permission is refused until the struct gains it. Unknown names
+// could go through Other once GitHub is known to refuse a name it does not
+// recognize, rather than ignore it and mint a token with every permission.
 func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
 	pairs := splitRepos(v)
 	if len(pairs) == 0 {

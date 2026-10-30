@@ -492,6 +492,16 @@ func Test_createInstallationToken_SendsOptionsBody(t *testing.T) {
 			},
 			wantBody: `{"repositories":["repo1","repo2"],"permissions":{"contents":"read","issues":"write"}}`,
 		},
+		{
+			name: "a permission with no field is sent with the others",
+			opts: &InstallationTokenOptions{
+				Permissions: &InstallationPermissions{
+					Contents: Ptr("read"),
+					Other:    map[string]string{"installation_repositories": "write"},
+				},
+			},
+			wantBody: `{"permissions":{"contents":"read","installation_repositories":"write"}}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1507,6 +1517,117 @@ func TestRevokeInstallationToken(t *testing.T) {
 			}
 			if method != http.MethodDelete || path != tt.wantPath || auth != "Bearer ghs_revoke" {
 				t.Errorf("request = %s %s with Authorization %q, want DELETE %s with the token itself", method, path, auth, tt.wantPath)
+			}
+		})
+	}
+}
+
+// Test_createInstallationToken_RefusesAmbiguousPermission checks a permission
+// named twice is refused before anything is sent, rather than one silently
+// winning.
+func Test_createInstallationToken_RefusesAmbiguousPermission(t *testing.T) {
+	t.Parallel()
+
+	var called atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called.Store(true)
+	}))
+	defer server.Close()
+
+	opts := &InstallationTokenOptions{Permissions: &InstallationPermissions{
+		Contents: Ptr("read"),
+		Other:    map[string]string{"contents": "write"},
+	}}
+	_, err := newClientForServer(t, server).createInstallationToken(context.Background(), 1, opts)
+
+	if err == nil || !strings.Contains(err.Error(), `"contents" is set both`) {
+		t.Errorf("err = %v, want the ambiguous permission named", err)
+	}
+	if called.Load() {
+		t.Error("the request was sent")
+	}
+}
+
+func TestFindInstallationID(t *testing.T) {
+	t.Parallel()
+
+	jwt := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "app-jwt", Expiry: time.Now().Add(time.Hour)})
+	failing := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+
+	tests := []struct {
+		name     string
+		owner    string
+		status   int
+		body     string
+		opts     func(serverURL string) []InstallationTokenSourceOpt
+		nilCtx   bool
+		wantPath string
+		wantID   int64
+		wantErr  string
+	}{
+		{name: "found", owner: "acme", status: http.StatusOK, body: `{"id":123,"account":{"login":"acme"}}`, wantPath: "/users/acme/installation", wantID: 123},
+		{
+			name: "an Enterprise Server base path is kept", owner: "acme", status: http.StatusOK, body: `{"id":7}`,
+			opts: func(u string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithEnterpriseURL(u)}
+			},
+			wantPath: "/api/v3/users/acme/installation", wantID: 7,
+		},
+		{name: "not installed", owner: "acme", status: http.StatusNotFound, body: `{"message":"Not Found"}`, wantPath: "/users/acme/installation", wantErr: "status 404"},
+		{name: "a body that is not JSON", owner: "acme", status: http.StatusOK, body: `<html>`, wantPath: "/users/acme/installation", wantErr: "failed to decode response"},
+		{name: "an answer without an ID", owner: "acme", status: http.StatusOK, body: `{"token":"ghs_x"}`, wantPath: "/users/acme/installation", wantErr: "without an ID"},
+		{name: "a repository is not an owner", owner: "acme/api", wantErr: "invalid owner"},
+		{name: "a dot segment is not an owner", owner: "..", wantErr: "invalid owner"},
+		{name: "no owner", wantErr: "invalid owner"},
+		{
+			name: "a base URL that does not parse is not sent to github.com", owner: "acme",
+			opts: func(string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithBaseURL("://bad")}
+			},
+			wantErr: "parse",
+		},
+		{
+			name: "transport fails the round trip", owner: "acme",
+			opts: func(u string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithBaseURL(u), WithHTTPClient(&http.Client{Transport: failing})}
+			},
+			wantErr: "failed to execute request",
+		},
+		{name: "no context", owner: "acme", nilCtx: true, wantErr: "failed to create request"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var path, auth string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path, auth = r.URL.Path, r.Header.Get("Authorization")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+
+			opts := []InstallationTokenSourceOpt{WithBaseURL(server.URL)}
+			if tt.opts != nil {
+				opts = tt.opts(server.URL)
+			}
+			ctx := context.Background()
+			if tt.nilCtx {
+				ctx = nil
+			}
+
+			id, err := FindInstallationID(ctx, jwt, tt.owner, opts...)
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("FindInstallationID() err = %v, want %q", err, tt.wantErr)
+			}
+			if id != tt.wantID {
+				t.Errorf("id = %d, want %d", id, tt.wantID)
+			}
+			if tt.wantPath != "" && (path != tt.wantPath || auth != "Bearer app-jwt") {
+				t.Errorf("request = %s with Authorization %q, want %s with the App JWT", path, auth, tt.wantPath)
 			}
 		})
 	}

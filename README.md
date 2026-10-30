@@ -107,6 +107,12 @@ less than the App was granted:
 githubauth token --installation 12345 --repos api,web --permissions contents:read
 ```
 
+If you know the account but not the installation ID, `--owner` looks it up:
+
+```bash
+githubauth token --owner acme --repos api
+```
+
 Run `githubauth help` for the rest.
 
 ### Keeping the token out of your logs
