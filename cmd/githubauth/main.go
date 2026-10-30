@@ -534,13 +534,10 @@ func splitRepos(v string) []string {
 }
 
 // parsePermissions reads --permissions into GitHub's permission object, or nil
-// when it names none. A name GitHub would not recognize is reported here,
-// rather than as a 422 that does not say which one.
-//
-// shortcut: only the names InstallationPermissions has fields for are known, so a
-// newer GitHub permission is refused until the struct gains it. Unknown names
-// could go through Other once GitHub is known to refuse a name it does not
-// recognize, rather than ignore it and mint a token with every permission.
+// when it names none. Every name goes through Other, so a permission GitHub
+// adds works before the library has a field for it. GitHub answers a name it
+// does not know with a 422, even beside valid ones, rather than ignoring it and
+// minting a token with every permission.
 func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
 	pairs := splitRepos(v)
 	if len(pairs) == 0 {
@@ -555,23 +552,7 @@ func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
 		}
 		levels[name] = level
 	}
-
-	// A map of strings always marshals, and always decodes into the struct.
-	raw, _ := json.Marshal(levels)
-	var perms githubauth.InstallationPermissions
-	_ = json.Unmarshal(raw, &perms)
-
-	// Unmarshal drops unknown names silently, so read back what it kept.
-	raw, _ = json.Marshal(perms)
-	var known map[string]string
-	_ = json.Unmarshal(raw, &known)
-	for _, pair := range pairs {
-		name, _, _ := strings.Cut(pair, ":")
-		if name = strings.TrimSpace(name); known[name] == "" {
-			return nil, usagef("--permissions: unknown permission %q; use GitHub's name, e.g. pull_requests", name)
-		}
-	}
-	return &perms, nil
+	return &githubauth.InstallationPermissions{Other: levels}, nil
 }
 
 // envInt64 ignores a malformed value here, before the flags are parsed;

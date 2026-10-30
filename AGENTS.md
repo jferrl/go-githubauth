@@ -70,7 +70,7 @@ Branch on these rather than on message text. Each one implies a different move:
 | 2 | the invocation is wrong | fix the flags, do not retry unchanged |
 | 3 | GitHub refused the key or the App's permissions | fix the credential, do not retry unchanged |
 | 4 | rate limited | wait `retry_after_seconds`, then repeat |
-| 5 | the App is not installed where it was asked to be | fix `--installation` |
+| 5 | the App is not installed where it was asked to be | fix `--installation` or `--owner` |
 
 Under `--exec` the exit code is the one the command exited with.
 
