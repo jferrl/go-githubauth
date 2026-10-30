@@ -14,6 +14,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [v1.11.0] - 2026-10-30
+
+`--exec` now points `gh` at the instance the token is for. One change alters behaviour;
+it is listed under Changed.
+
+### Added
+
+- With `--enterprise-url`, or a `--base-url` other than github.com, `--exec` sets
+  `$GH_HOST`, so `gh` uses the token on that instance instead of sending it to
+  github.com. A `GH_HOST` you already exported is kept (#85)
+- The docs and `token` help show `githubauth token --exec -- git push`, which pushes as
+  the App once git takes credentials from `gh` (`gh auth setup-git`) (#85)
+
+### Changed
+
+- **A `--base-url` proxy in front of github.com now gets `$GH_HOST` set to the proxy's
+  host**, and `gh` then targets the proxy. Export `GH_HOST=github.com` to keep the old
+  behaviour (#85)
+
+### Fixed
+
+- An Enterprise Server given as `--base-url` did not get `$GH_ENTERPRISE_TOKEN` and
+  `$GITHUB_ENTERPRISE_TOKEN` under `--exec`, so `gh` found no token for it. It now gets
+  them, as with `--enterprise-url` (#85)
+- The `jwt` help said `gh` could not send the JWT. It can, with
+  `gh api -H "Authorization: Bearer $GITHUB_TOKEN"` (#85)
+- The release config used GoReleaser's deprecated cask `post.install` hook. The cask
+  still clears the macOS quarantine flag, now through `install_steps` (#84)
+
 ## [v1.10.0] - 2026-10-30
 
 Fixes a leak of the App JWT on a cross-host redirect, and gives the CLI an exit code
