@@ -14,6 +14,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [v1.10.0] - 2026-10-30
+
+Fixes a leak of the App JWT on a cross-host redirect, and gives the CLI an exit code
+per kind of failure plus `--exec`. Two changes alter behaviour; both are listed under
+Changed.
+
+### Security
+
+- The installation token exchange followed a redirect to any host and sent the App JWT
+  with it. `oauth2.Transport` sets `Authorization` on every hop, which undoes the header
+  stripping `http.Client` does across hosts. A redirect to another host, or from https to
+  http, is now refused and returned as an `APIError` carrying the 3xx status. This also
+  holds for a client passed to `WithHTTPClient` (#82)
+
+### Added
+
+- `APIError{StatusCode, Message}`, returned for every rejection that is not throttling.
+  Its `Error()` renders the same string as before, so code matching on the message keeps
+  working. Extract it with `errors.As` (#75)
+- CLI exit codes per failure: 2 for an invocation to fix, 3 for a credential or
+  permission GitHub refused, 4 for rate limiting, 5 for an App not installed where it
+  was asked to be. 1 means anything else, where a retry may help (#75, #82)
+- `--exec -- <command>` runs a command with the credential in `$GITHUB_TOKEN` and
+  `$GH_TOKEN`, prints it nowhere, and exits with the command's own code. A token printed
+  to stdout stays valid for an hour in every log and transcript that captured it (#75, #82)
+- Under `--json`, or when a coding agent is detected, a failure is one
+  `githubauth.error` JSON document on stdout and stderr stays empty. A successful run
+  prints the same bare credential either way (#75)
+
+### Changed
+
+- **A throttled request asking for more than 60s now fails at once** instead of sleeping
+  60s and retrying into the same limit. `RetryAfter` carries GitHub's full wait, capped
+  at an hour, where it was capped at 60s (#82)
+- **The CLI no longer exits 1 for every failure.** A script testing `$? -eq 1` now sees
+  2, 3, 4 or 5 for some of them. `<command> -h` exits 0 instead of 2 (#75, #82)
+
+### Fixed
+
+- The default HTTP client had no overall timeout, so a server that stalled mid-response
+  hung `Token()` for good. It now gives up after 60s (#82)
+- The installation token source refreshed the App JWT with no skew, so a JWT seconds from
+  expiry could reach GitHub. It now refreshes 30s early, like the other sources (#82)
+- A throttled wait cut short by the context now still matches `ErrRateLimited` (#82)
+- `githubauth token --repos ' , '` named no repository and minted a token for the whole
+  installation. It now exits 2 (#82)
+- `githubauth jwt --expiry` outside 90s to 10m quietly produced a 10-minute JWT. It now
+  exits 2 (#82)
+- A malformed `$GITHUB_APP_INSTALLATION_ID` or `$GITHUB_APP_ID` was reported as a
+  missing flag. It is now reported as malformed (#82)
+
 ## [v1.9.1] - 2026-09-19
 
 ### Fixed
