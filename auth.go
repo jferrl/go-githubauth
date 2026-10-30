@@ -32,6 +32,15 @@ const (
 	// by a request starting near exp and arriving at GitHub after exp.
 	DefaultExpirySkew = 30 * time.Second
 
+	// ExtraPermissions is the oauth2.Token Extra key under which an installation
+	// token carries the permissions GitHub granted it, as a map[string]string.
+	ExtraPermissions = "permissions"
+
+	// ExtraRepositories is the oauth2.Token Extra key under which an
+	// installation token limited to some repositories carries their names, as a
+	// []string. It is absent for a token covering the whole installation.
+	ExtraRepositories = "repositories"
+
 	// applicationTokenBackdate is how far into the past the iat claim of an
 	// application JWT is set, so a fast local clock cannot make GitHub see an
 	// iat in the future. It is subtracted from exp as well, so it is also the
@@ -542,11 +551,31 @@ func (t *installationTokenSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 
-	return &oauth2.Token{
+	tok := &oauth2.Token{
 		AccessToken: token.Token,
 		TokenType:   bearerTokenType,
 		Expiry:      token.ExpiresAt,
-	}, nil
+	}
+
+	// GitHub's answer says what the token can do, which may differ from what
+	// was asked: metadata:read comes with every token.
+	extra := map[string]any{}
+	if token.Permissions != nil {
+		extra[ExtraPermissions] = token.Permissions.levels()
+	}
+	if len(token.Repositories) > 0 {
+		names := make([]string, 0, len(token.Repositories))
+		for _, r := range token.Repositories {
+			if r.Name != nil {
+				names = append(names, *r.Name)
+			}
+		}
+		extra[ExtraRepositories] = names
+	}
+	if len(extra) == 0 {
+		return tok, nil
+	}
+	return tok.WithExtra(extra), nil
 }
 
 // personalAccessTokenSource represents a static GitHub personal access token source
