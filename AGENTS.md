@@ -35,6 +35,10 @@ narrow scope when you do:
 githubauth token --installation 12345 --repos api,web --permissions contents:read
 ```
 
+`--repos acme/api` also finds the installation, as `--owner acme` does. `--json`
+reports the permissions and repositories GitHub actually granted, which is how to
+check the scope rather than assume it.
+
 ## The CLI
 
 ```
@@ -109,7 +113,9 @@ is inferred. Both sources cache and refresh 30s before expiry.
 `RevokeInstallationToken(ctx, token)` ends an installation token before its hour
 is up. `FindInstallationID(ctx, appSrc, owner)` finds the installation on a user
 or organization when only the account is known. `InstallationPermissions.Other`
-requests a permission GitHub added after the struct was last updated.
+requests a permission GitHub added after the struct was last updated. An
+installation token carries what GitHub granted in `tok.Extra(githubauth.ExtraPermissions)`
+(`map[string]string`) and `tok.Extra(githubauth.ExtraRepositories)` (`[]string`).
 
 Errors worth branching on: `*githubauth.RateLimitError` (carries `RetryAfter`,
 unwraps to `ErrRateLimited`) and `*githubauth.APIError` (carries `StatusCode`).

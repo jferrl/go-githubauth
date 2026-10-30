@@ -164,7 +164,7 @@ func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
 	fs.StringVar(&a.clientID, "client-id", os.Getenv("GITHUB_APP_CLIENT_ID"), "App client ID, e.g. Iv1.1234567890abcdef ($GITHUB_APP_CLIENT_ID)")
 	fs.Int64Var(&a.appID, "app-id", envInt64("GITHUB_APP_ID"), "legacy numeric App ID, for an App with no client ID ($GITHUB_APP_ID)")
 	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM ($GITHUB_APP_PRIVATE_KEY)")
-	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token")
+	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token, with the permissions and repositories GitHub granted an installation token")
 	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere; $GH_HOST is set for an Enterprise or data residency host")
 	fs.BoolVar(&out.agent, "agent", out.agent, "report failures as one JSON document on stdout (on when a coding agent is detected)")
 }
@@ -254,7 +254,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	app.bind(fs, out)
 
 	installation := fs.Int64("installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
-	repos := fs.String("repos", "", "comma-separated repository names to scope the token to")
+	repos := fs.String("repos", "", "comma-separated repository names to scope the token to; owner/repo also finds the installation, like --owner")
 	owner := fs.String("owner", "", "user or organization the App is installed on, to look up the installation instead of passing --installation")
 	permissions := fs.String("permissions", "", "comma-separated name:level pairs to scope the token to, e.g. contents:read,pull_requests:write")
 	keep := fs.Bool("keep", false, "under --exec, leave the token valid when the command exits instead of revoking it")
@@ -269,6 +269,25 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	}
 	if *keep && !app.exec {
 		return usagef("--keep applies only under --exec, which revokes the token when the command exits")
+	}
+	// An empty scope is no scope: GitHub would mint a token for every
+	// repository, the opposite of what passing --repos asked for.
+	names, repoOwner, err := splitOwner(splitRepos(*repos))
+	if err != nil {
+		return err
+	}
+	if isSet(fs, "repos") && len(names) == 0 {
+		return usagef("--repos names no repository; omit it for a token covering the whole installation")
+	}
+	// An owner/repo name finds the installation the way --owner does.
+	if repoOwner != "" {
+		switch {
+		case isSet(fs, "installation"):
+			return usagef("--repos names the owner %s, which finds the installation: drop --installation, or the %s/ prefix", repoOwner, repoOwner)
+		case *owner != "" && !strings.EqualFold(*owner, repoOwner):
+			return usagef("--repos names repositories of %s, but --owner is %s", repoOwner, *owner)
+		}
+		*owner = repoOwner
 	}
 	switch {
 	case *owner != "" && isSet(fs, "installation"):
@@ -291,12 +310,6 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	}
 	if err := checkURL("--enterprise-url", *enterpriseURL); err != nil {
 		return err
-	}
-	// An empty scope is no scope: GitHub would mint a token for every
-	// repository, the opposite of what passing --repos asked for.
-	names := splitRepos(*repos)
-	if isSet(fs, "repos") && len(names) == 0 {
-		return usagef("--repos names no repository; omit it for a token covering the whole installation")
 	}
 	perms, err := parsePermissions(*permissions)
 	if err != nil {
@@ -517,10 +530,16 @@ func write(w io.Writer, tok *oauth2.Token, asJSON bool) error {
 		_, err := fmt.Fprintln(w, tok.AccessToken)
 		return err
 	}
+	// What GitHub granted, so a caller can check the scope it got. A JWT
+	// carries neither.
+	perms, _ := tok.Extra(githubauth.ExtraPermissions).(map[string]string)
+	repos, _ := tok.Extra(githubauth.ExtraRepositories).([]string)
 	return json.NewEncoder(w).Encode(struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}{tok.AccessToken, tok.Expiry})
+		Token        string            `json:"token"`
+		ExpiresAt    time.Time         `json:"expires_at"`
+		Permissions  map[string]string `json:"permissions,omitempty"`
+		Repositories []string          `json:"repositories,omitempty"`
+	}{tok.AccessToken, tok.Expiry, perms, repos})
 }
 
 func splitRepos(v string) []string {
@@ -531,6 +550,29 @@ func splitRepos(v string) []string {
 		}
 	}
 	return out
+}
+
+// splitOwner strips the owner from names written owner/repo, the form
+// actions/create-github-app-token takes, and returns the owner they share.
+// GitHub scopes a token by bare repository names.
+func splitOwner(names []string) ([]string, string, error) {
+	var owner string
+	out := make([]string, len(names))
+	for i, name := range names {
+		o, repo, ok := strings.Cut(name, "/")
+		if !ok {
+			out[i] = name
+			continue
+		}
+		if o == "" || repo == "" || strings.Contains(repo, "/") {
+			return nil, "", usagef("--repos %q is neither a repository name nor owner/repo", name)
+		}
+		if owner != "" && !strings.EqualFold(owner, o) {
+			return nil, "", usagef("--repos names repositories of %s and of %s; a token covers one installation", owner, o)
+		}
+		owner, out[i] = o, repo
+	}
+	return out, owner, nil
 }
 
 // parsePermissions reads --permissions into GitHub's permission object, or nil

@@ -663,12 +663,14 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				ExpiresAt: expiration,
 				Permissions: &InstallationPermissions{
 					PullRequests: Ptr("read"),
+					Other:        map[string]string{"installation_repositories": "write"},
 				},
 				Repositories: []Repository{
 					{
 						Name: Ptr("mocked-repo-1"),
 						ID:   Ptr(int64(1)),
 					},
+					{ID: Ptr(int64(2))},
 				},
 			},
 		),
@@ -730,11 +732,15 @@ func Test_installationTokenSource_Token(t *testing.T) {
 					WithHTTPClient(mockedHTTPClient),
 				},
 			},
-			want: &oauth2.Token{
+			// GitHub's answer rides along, including a permission with no field.
+			want: (&oauth2.Token{
 				AccessToken: "mocked-installation-token",
 				TokenType:   "Bearer",
 				Expiry:      expiration,
-			},
+			}).WithExtra(map[string]any{
+				ExtraPermissions:  map[string]string{"pull_requests": "read", "installation_repositories": "write"},
+				ExtraRepositories: []string{"mocked-repo-1"},
+			}),
 		},
 	}
 	for _, tt := range tests {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1631,5 +1632,77 @@ func TestFindInstallationID(t *testing.T) {
 				t.Errorf("request = %s with Authorization %q, want %s with the App JWT", path, auth, tt.wantPath)
 			}
 		})
+	}
+}
+
+func TestInstallationPermissions_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantField *string
+		wantOther map[string]string
+		wantErr   bool
+	}{
+		{name: "a field", body: `{"contents":"read"}`, wantField: Ptr("read")},
+		{name: "a permission with no field", body: `{"installation_repositories":"write"}`, wantOther: map[string]string{"installation_repositories": "write"}},
+		{name: "a value that is not a level is dropped", body: `{"future":{"nested":true}}`},
+		{name: "null", body: `null`},
+		{name: "a field of the wrong type", body: `{"contents":1}`, wantErr: true},
+		{name: "an empty level stays on its field", body: `{"contents":""}`, wantField: Ptr("")},
+		{name: "a field's name in another case stays on the field", body: `{"Contents":"read"}`, wantField: Ptr("read")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var p InstallationPermissions
+			err := json.Unmarshal([]byte(tt.body), &p)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Unmarshal() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if (p.Contents == nil) != (tt.wantField == nil) || p.Contents != nil && *p.Contents != *tt.wantField {
+				t.Errorf("Contents = %v, want %v", p.Contents, tt.wantField)
+			}
+			if !maps.Equal(p.Other, tt.wantOther) {
+				t.Errorf("Other = %v, want %v", p.Other, tt.wantOther)
+			}
+			// What was decoded marshals again.
+			if _, err := json.Marshal(p); err != nil {
+				t.Errorf("Marshal() after Unmarshal err = %v", err)
+			}
+		})
+	}
+}
+
+// TestInstallationPermissions_UnmarshalJSONUpdatesOther checks a second decode
+// into the same value replaces a level, as it does for a field.
+func TestInstallationPermissions_UnmarshalJSONUpdatesOther(t *testing.T) {
+	t.Parallel()
+
+	var p InstallationPermissions
+	for _, body := range []string{`{"future":"write"}`, `{"future":"read"}`} {
+		if err := json.Unmarshal([]byte(body), &p); err != nil {
+			t.Fatalf("Unmarshal(%s) err = %v", body, err)
+		}
+	}
+	if got := p.Other["future"]; got != "read" {
+		t.Errorf(`Other["future"] = %q, want "read"`, got)
+	}
+}
+
+// TestInstallationPermissions_MarshalJSONRefusesCaseVariant checks Other cannot
+// sneak in a second level for a field by changing the name's case.
+func TestInstallationPermissions_MarshalJSONRefusesCaseVariant(t *testing.T) {
+	t.Parallel()
+
+	p := InstallationPermissions{Contents: Ptr("read"), Other: map[string]string{"Contents": "write"}}
+	if _, err := json.Marshal(p); err == nil {
+		t.Error("Marshal() err = nil, want the permission named twice refused")
 	}
 }

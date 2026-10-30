@@ -99,18 +99,21 @@ vault kv get -field=pem secret/github-app |
   githubauth token --key - --installation 12345
 ```
 
-`githubauth jwt` prints the App JWT for the few endpoints that need one, `--json` adds the
-expiry, and `--repos` and `--permissions` scope the token to named repositories and to
-less than the App was granted:
+`githubauth jwt` prints the App JWT for the few endpoints that need one, and `--repos` and
+`--permissions` scope the token to named repositories and to less than the App was granted.
+`--json` adds the expiry and, for an installation token, the permissions and repositories
+GitHub granted, so you can check the scope you got:
 
 ```bash
 githubauth token --installation 12345 --repos api,web --permissions contents:read
 ```
 
-If you know the account but not the installation ID, `--owner` looks it up:
+If you know the account but not the installation ID, `--owner` looks it up, and so does an
+`owner/repo` name in `--repos`:
 
 ```bash
 githubauth token --owner acme --repos api
+githubauth token --repos acme/api    # the same
 ```
 
 Run `githubauth help` for the rest.

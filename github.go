@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -158,7 +160,7 @@ type InstallationPermissions struct {
 
 	// Other holds permissions with no field above, keyed by GitHub's name, such
 	// as "installation_repositories", so one GitHub adds can be requested before
-	// a field exists. Names are sent as given, so GitHub has the last word on a
+	// a field exists, and one GitHub grants is not lost when a token is decoded. Names are sent as given, so GitHub has the last word on a
 	// misspelt one. Naming a permission whose field is also set is an error.
 	Other map[string]string `json:"-"`
 }
@@ -175,12 +177,57 @@ func (p InstallationPermissions) MarshalJSON() ([]byte, error) {
 	all := make(map[string]string, len(p.Other))
 	_ = json.Unmarshal(b, &all)
 	for name, level := range p.Other {
-		if _, ok := all[name]; ok {
+		if _, ok := all[strings.ToLower(name)]; ok {
 			return nil, fmt.Errorf("permission %q is set both as a field and in Other", name)
 		}
 		all[name] = level
 	}
 	return json.Marshal(all)
+}
+
+// UnmarshalJSON keeps the permissions that have no field in Other.
+func (p *InstallationPermissions) UnmarshalJSON(b []byte) error {
+	type fields InstallationPermissions
+	if err := json.Unmarshal(b, (*fields)(p)); err != nil {
+		return err
+	}
+
+	// b decoded into the fields above, so it is a JSON object or null.
+	var all map[string]any
+	_ = json.Unmarshal(b, &all)
+	for name, level := range all {
+		if s, ok := level.(string); ok && !permissionFields[strings.ToLower(name)] {
+			if p.Other == nil {
+				p.Other = make(map[string]string)
+			}
+			p.Other[name] = s
+		}
+	}
+	return nil
+}
+
+// permissionFields holds the names InstallationPermissions has a field for,
+// lowercased: encoding/json matches a key to a field ignoring case, so a name
+// that differs only in case belongs to the field, not to Other.
+var permissionFields = func() map[string]bool {
+	t := reflect.TypeFor[InstallationPermissions]()
+	names := make(map[string]bool, t.NumField())
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "-" {
+			names[strings.ToLower(name)] = true
+		}
+	}
+	return names
+}()
+
+// levels is every permission set, by GitHub's name.
+func (p InstallationPermissions) levels() map[string]string {
+	type fields InstallationPermissions
+	b, _ := json.Marshal(fields(p))
+	levels := make(map[string]string, len(p.Other))
+	_ = json.Unmarshal(b, &levels)
+	maps.Copy(levels, p.Other)
+	return levels
 }
 
 // InstallationToken represents a GitHub App installation token.

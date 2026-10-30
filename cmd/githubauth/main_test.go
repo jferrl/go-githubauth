@@ -480,6 +480,60 @@ func TestRun(t *testing.T) {
 			wantStderr:  "Check --installation or --owner",
 		},
 		{
+			name: "an owner prefix and --installation are misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "acme/api", "--installation", "9"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "drop --installation, or the acme/ prefix",
+		},
+		{
+			name: "an owner prefix and a different --owner are misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "acme/api", "--owner", "other"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--repos names repositories of acme, but --owner is other",
+		},
+		{
+			name: "repositories of two owners are misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "acme/api,other/web"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "repositories of acme and of other",
+		},
+		{
+			name: "an owner prefix without a repository is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "acme/"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--repos "acme/" is neither`,
+		},
+		{
+			name: "a path deeper than owner/repo is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "acme/api/x"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--repos "acme/api/x" is neither`,
+		},
+		{
+			name: "a dot owner prefix is not an account",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--repos", "../api"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `--owner ".." is not an account`,
+		},
+		{
 			name: "keep without exec is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--keep"}
@@ -736,6 +790,7 @@ func TestTokenRequests(t *testing.T) {
 		wantCode         int
 		wantMint   string
 		wantBody   string
+		wantStdout string
 		wantRevoke bool
 		wantStderr string
 	}{
@@ -747,6 +802,22 @@ func TestTokenRequests(t *testing.T) {
 			name:     "an owner is looked up, ahead of the environment",
 			args:     []string{"--owner", "acme"},
 			wantMint: "/app/installations/123/access_tokens",
+		},
+		{
+			name:     "an owner prefix on --repos finds the installation, ahead of the environment",
+			args:     []string{"--repos", "acme/api,web"},
+			wantMint: "/app/installations/123/access_tokens",
+			wantBody: `{"repositories":["api","web"]}`,
+		},
+		{
+			name:     "an owner prefix agrees with --owner",
+			args:     []string{"--repos", "acme/api", "--owner", "acme"},
+			wantMint: "/app/installations/123/access_tokens",
+		},
+		{
+			name:       "json shows what GitHub granted",
+			args:       []string{"--json"},
+			wantStdout: `"permissions":{"metadata":"read","pull_requests":"write"},"repositories":["api"]}`,
 		},
 		{
 			name:     "repos and permissions go in one request",
@@ -851,7 +922,12 @@ func TestTokenRequests(t *testing.T) {
 				b, _ := io.ReadAll(r.Body)
 				mint, body = r.URL.Path, string(b)
 				w.WriteHeader(http.StatusCreated)
-				_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_minted", "expires_at": time.Now().Add(time.Hour)})
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"token":        "ghs_minted",
+					"expires_at":   time.Now().Add(time.Hour),
+					"permissions":  map[string]string{"metadata": "read", "pull_requests": "write"},
+					"repositories": []map[string]any{{"id": 1, "name": "api", "full_name": "acme/api"}},
+				})
 			}))
 			defer srv.Close()
 			t.Setenv("GITHUBAUTH_EXEC_CALL", srv.URL+"/child")
@@ -863,6 +939,9 @@ func TestTokenRequests(t *testing.T) {
 			}
 			if tt.wantMint != "" && mint != tt.wantMint {
 				t.Errorf("minted at %s, want %s", mint, tt.wantMint)
+			}
+			if !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
 			}
 			if tt.wantBody != "" && body != tt.wantBody {
 				t.Errorf("request body = %s, want %s", body, tt.wantBody)
