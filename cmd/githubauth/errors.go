@@ -106,7 +106,7 @@ func classify(err error) failure {
 		case http.StatusUnauthorized:
 			f.code = exitCredentials
 			f.suggestions = []string{
-				"GitHub rejected the App JWT: check that --key is the current key for --client-id and that the clock is right.",
+				"GitHub rejected the App JWT: check that --key is the current key for the App in --client-id (or --app-id) and that the clock is right.",
 				wrongHostHint,
 			}
 		case http.StatusForbidden:
@@ -118,7 +118,7 @@ func classify(err error) failure {
 			f.code = exitNotFound
 			f.suggestions = []string{
 				"Check --installation: the App may not be installed on that account.",
-				`List the App's installations: curl -H "Authorization: Bearer $(githubauth jwt)" https://api.github.com/app/installations`,
+				`List the App's installations: githubauth jwt --exec -- sh -c 'curl -sH "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/app/installations'`,
 				wrongHostHint,
 			}
 		}
