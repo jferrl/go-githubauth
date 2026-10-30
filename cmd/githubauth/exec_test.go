@@ -222,6 +222,7 @@ func TestGhHost(t *testing.T) {
 		want   string
 	}{
 		{apiURL: "", want: ""},
+		{apiURL: "://no-scheme", want: ""},
 		{apiURL: "https://api.github.com/", want: "github.com"},
 		{apiURL: "https://api.Octo.ghe.com/", want: "octo.ghe.com"},
 		{apiURL: "https://github.example.com/api/v3/", want: "github.example.com"},
