@@ -1406,3 +1406,108 @@ func Test_APIError_MessageFormat(t *testing.T) {
 		t.Errorf("Error() =\n  %q\nwant\n  %q", got, want)
 	}
 }
+
+func TestRevokeInstallationToken(t *testing.T) {
+	t.Parallel()
+
+	failing := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+
+	tests := []struct {
+		name     string
+		status   int
+		header   http.Header
+		opts     func(serverURL string) []InstallationTokenSourceOpt
+		nilCtx   bool
+		wantPath string
+		wantErr  func(error) bool
+	}{
+		{
+			name:     "revoked",
+			status:   http.StatusNoContent,
+			wantPath: "/installation/token",
+			wantErr:  func(err error) bool { return err == nil },
+		},
+		{
+			name:   "an Enterprise Server base path is kept",
+			status: http.StatusNoContent,
+			opts: func(u string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithEnterpriseURL(u)}
+			},
+			wantPath: "/api/v3/installation/token",
+			wantErr:  func(err error) bool { return err == nil },
+		},
+		{
+			name:     "a token GitHub no longer accepts",
+			status:   http.StatusUnauthorized,
+			wantPath: "/installation/token",
+			wantErr: func(err error) bool {
+				var apiErr *APIError
+				return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized
+			},
+		},
+		{
+			name:     "throttled",
+			status:   http.StatusTooManyRequests,
+			header:   http.Header{"Retry-After": {"5"}},
+			wantPath: "/installation/token",
+			wantErr:  func(err error) bool { return errors.Is(err, ErrRateLimited) },
+		},
+		{
+			name: "a base URL that does not parse is not sent to github.com",
+			opts: func(string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithBaseURL("://bad")}
+			},
+			wantErr: func(err error) bool { return err != nil && strings.Contains(err.Error(), "parse") },
+		},
+		{
+			name: "transport fails the round trip",
+			opts: func(u string) []InstallationTokenSourceOpt {
+				return []InstallationTokenSourceOpt{WithBaseURL(u), WithHTTPClient(&http.Client{Transport: failing})}
+			},
+			wantErr: func(err error) bool { return err != nil && strings.Contains(err.Error(), "failed to execute request") },
+		},
+		{
+			name:    "no context",
+			nilCtx:  true,
+			wantErr: func(err error) bool { return err != nil && strings.Contains(err.Error(), "failed to create request") },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var method, path, auth string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				method, path, auth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+				for k, v := range tt.header {
+					w.Header()[k] = v
+				}
+				w.WriteHeader(tt.status)
+			}))
+			defer server.Close()
+
+			opts := []InstallationTokenSourceOpt{WithBaseURL(server.URL)}
+			if tt.opts != nil {
+				opts = tt.opts(server.URL)
+			}
+			ctx := context.Background()
+			if tt.nilCtx {
+				ctx = nil
+			}
+
+			err := RevokeInstallationToken(ctx, "ghs_revoke", opts...)
+			if !tt.wantErr(err) {
+				t.Fatalf("RevokeInstallationToken() err = %v", err)
+			}
+			if tt.wantPath == "" {
+				return
+			}
+			if method != http.MethodDelete || path != tt.wantPath || auth != "Bearer ghs_revoke" {
+				t.Errorf("request = %s %s with Authorization %q, want DELETE %s with the token itself", method, path, auth, tt.wantPath)
+			}
+		})
+	}
+}

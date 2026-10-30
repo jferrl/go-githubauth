@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -66,10 +67,15 @@ func writeFile(t *testing.T, name string, data []byte) string {
 	return path
 }
 
-// tokenHandler stands in for the installation access token endpoint.
+// tokenHandler stands in for the installation access token endpoint, and for
+// the revocation --exec sends once the command exits.
 func tokenHandler(token string) func() *httptest.Server {
 	return func() *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodDelete {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token":      token,
@@ -410,6 +416,42 @@ func TestRun(t *testing.T) {
 			wantCode:    12,
 		},
 		{
+			name: "keep without exec is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--keep"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--keep applies only under --exec",
+		},
+		{
+			name: "permissions naming none would mint every permission",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--permissions", " , "}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "--permissions names no permission",
+		},
+		{
+			name: "a permission without a level is misuse",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--permissions", "contents"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `"contents" is not name:level`,
+		},
+		{
+			name: "an unknown permission is named",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--permissions", "contents:read,pull-requests:write"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: `unknown permission "pull-requests"`,
+		},
+		{
 			name: "exec without a command is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--exec"}
@@ -617,6 +659,111 @@ func TestRun(t *testing.T) {
 			}
 			if tt.quietStderr && stderr.Len() != 0 {
 				t.Errorf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+// TestTokenRequests checks what reaches GitHub: the scope asked for, and the
+// revocation --exec sends once the command exits, whatever it exited with.
+func TestTokenRequests(t *testing.T) {
+	keyPath := writeFile(t, "app.pem", testKeyPEM(t))
+
+	tests := []struct {
+		name       string
+		args       []string
+		code       string
+		revokeWith int
+		wantCode   int
+		wantBody   string
+		wantRevoke bool
+		wantStderr string
+	}{
+		{
+			name:     "repos and permissions go in one request",
+			args:     []string{"--repos", "api", "--permissions", "contents:read, pull_requests:write"},
+			wantBody: `{"repositories":["api"],"permissions":{"contents":"read","pull_requests":"write"}}`,
+		},
+		{
+			name:       "exec revokes the token when the command exits",
+			args:       []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code:       "0",
+			wantRevoke: true,
+		},
+		{
+			name:       "exec revokes the token when the command fails",
+			args:       []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code:       "9",
+			wantCode:   9,
+			wantRevoke: true,
+		},
+		{
+			name:       "exec revokes a token whose command never started",
+			args:       []string{"--exec", "--", "githubauth-no-such-command"},
+			wantCode:   exitUsage,
+			wantRevoke: true,
+		},
+		{
+			name: "keep leaves the token valid",
+			args: []string{"--exec", "--keep", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code: "0",
+		},
+		{
+			name:       "a token already dead is not reported as valid",
+			args:       []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code:       "0",
+			revokeWith: http.StatusUnauthorized,
+			wantRevoke: true,
+		},
+		{
+			name:       "a failed revocation warns and keeps the command's exit code",
+			args:       []string{"--exec", "--", os.Args[0], "-test.run=^TestExecHelper$"},
+			code:       "0",
+			revokeWith: http.StatusInternalServerError,
+			wantRevoke: true,
+			wantStderr: "the token was not revoked",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
+			t.Setenv("GITHUBAUTH_EXEC_CODE", tt.code)
+
+			var body, revokedWith string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete && r.URL.Path == "/installation/token" {
+					revokedWith = r.Header.Get("Authorization")
+					w.WriteHeader(cmp.Or(tt.revokeWith, http.StatusNoContent))
+					return
+				}
+				b, _ := io.ReadAll(r.Body)
+				body = string(b)
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_minted", "expires_at": time.Now().Add(time.Hour)})
+			}))
+			defer srv.Close()
+
+			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", srv.URL}, tt.args...)
+			var stdout, stderr bytes.Buffer
+			if got := run(args, strings.NewReader(""), &stdout, &stderr); got != tt.wantCode {
+				t.Errorf("run() = %d, want %d (stderr: %s)", got, tt.wantCode, stderr.String())
+			}
+			if tt.wantBody != "" && body != tt.wantBody {
+				t.Errorf("request body = %s, want %s", body, tt.wantBody)
+			}
+			if revoked := revokedWith != ""; revoked != tt.wantRevoke {
+				t.Errorf("revoked = %v, want %v", revoked, tt.wantRevoke)
+			}
+			if tt.wantRevoke && revokedWith != "Bearer ghs_minted" {
+				t.Errorf("revoked with Authorization %q, want the minted token", revokedWith)
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+			if tt.wantStderr == "" && strings.Contains(stderr.String(), "not revoked") {
+				t.Errorf("stderr = %q, want no revocation warning", stderr.String())
 			}
 		})
 	}

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -11,7 +13,9 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/jferrl/go-githubauth"
 	"golang.org/x/oauth2"
 )
 
@@ -98,6 +102,28 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 		}
 	}
 	return fmt.Errorf("running %s: %w", argv[0], err)
+}
+
+// revokeTimeout keeps a stalled GitHub from holding the command's exit code back
+// for the library's full minute.
+const revokeTimeout = 10 * time.Second
+
+// revoke ends the token once the command it was minted for has exited, so a
+// copy left in a child's environment or output stops working. A failure only
+// warns: the exit code stays the command's.
+func revoke(tok *oauth2.Token, opts []githubauth.InstallationTokenSourceOpt, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
+	defer cancel()
+	err := githubauth.RevokeInstallationToken(ctx, tok.AccessToken, opts...)
+	// A 401 means the token is already dead: past its hour, or revoked by the
+	// command itself.
+	var apiErr *githubauth.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
+		return
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "githubauth: the token was not revoked and stays valid until %s: %v\n", tok.Expiry.Format(time.RFC3339), err)
+	}
 }
 
 // ghHost names the instance behind an API URL the way gh does. github.com and

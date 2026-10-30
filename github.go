@@ -306,16 +306,47 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 		return &token, nil
 	}
 
+	return nil, c.responseError(resp)
+}
+
+// revokeInstallationToken revokes the installation token the client's transport
+// authenticates with.
+//
+// API documentation: https://docs.github.com/en/rest/apps/installations?apiVersion=2022-11-28#revoke-an-installation-access-token
+func (c *githubClient) revokeInstallationToken(ctx context.Context) error {
+	u := c.baseURL.JoinPath("installation", "token")
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	return c.responseError(resp)
+}
+
+// responseError turns a rejected response into a *RateLimitError when GitHub
+// throttled it, and an *APIError otherwise.
+func (c *githubClient) responseError(resp *http.Response) error {
 	bodyResp, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if delay, ok := c.throttleDelay(resp, bodyResp); ok {
-		return nil, &RateLimitError{
+		return &RateLimitError{
 			StatusCode: resp.StatusCode,
 			RetryAfter: delay,
 			Message:    string(bodyResp),
 		}
 	}
-
-	return nil, &APIError{StatusCode: resp.StatusCode, Message: string(bodyResp)}
+	return &APIError{StatusCode: resp.StatusCode, Message: string(bodyResp)}
 }
 
 // throttleDelay inspects a non-2xx response and reports the retry hint GitHub
