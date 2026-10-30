@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,20 +21,21 @@ import (
 var execTokenEnv = []string{"GITHUB_TOKEN", "GH_TOKEN"}
 
 // execEnterpriseEnv is what gh reads for an Enterprise Server host. Both are
-// always cleared, and set only for an --enterprise-url credential, so gh never
+// always cleared, and set only for an Enterprise Server credential, so gh never
 // sends one minted for a single host to whichever enterprise host it targets.
 var execEnterpriseEnv = []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // runWithToken runs argv with the credential in its environment and writes
 // nothing to stdout itself. The token never reaches a terminal, a log, or an
-// agent's transcript.
+// agent's transcript. host is the instance the credential is for, as gh names
+// it, or empty for github.com.
 //
 // The child's exit status becomes githubauth's, so --exec is transparent to
 // whatever inspects the result.
-func runWithToken(argv []string, tok *oauth2.Token, enterprise bool, stdin io.Reader, stdout, stderr io.Writer) error {
+func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader, stdout, stderr io.Writer) error {
 	all := append(slices.Clone(execTokenEnv), execEnterpriseEnv...)
 	keys := execTokenEnv
-	if enterprise {
+	if isEnterpriseHost(host) {
 		keys = all
 	}
 
@@ -41,6 +43,11 @@ func runWithToken(argv []string, tok *oauth2.Token, enterprise bool, stdin io.Re
 	cmd.Env = environWithout(os.Environ(), all...)
 	for _, key := range keys {
 		cmd.Env = append(cmd.Env, key+"="+tok.AccessToken)
+	}
+	// Without it gh targets github.com, where this credential is useless. A
+	// GH_HOST the caller exported is theirs to keep.
+	if host != "" && os.Getenv("GH_HOST") == "" {
+		cmd.Env = append(cmd.Env, "GH_HOST="+host)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 
@@ -91,6 +98,27 @@ func runWithToken(argv []string, tok *oauth2.Token, enterprise bool, stdin io.Re
 		}
 	}
 	return fmt.Errorf("running %s: %w", argv[0], err)
+}
+
+// ghHost names the instance behind an API URL the way gh does. github.com and
+// data residency serve their API from an api. subdomain, Enterprise Server from
+// /api/v3 on the host itself.
+func ghHost(apiURL string) string {
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if rest, ok := strings.CutPrefix(host, "api."); ok && !isEnterpriseHost(rest) {
+		return rest
+	}
+	return host
+}
+
+// isEnterpriseHost mirrors gh's own test for whether a host reads the
+// enterprise variables: anything but github.com and data residency (*.ghe.com).
+func isEnterpriseHost(host string) bool {
+	return host != "" && host != "github.com" && !strings.HasSuffix(host, ".github.com") && !strings.HasSuffix(host, ".ghe.com")
 }
 
 // environWithout drops keys from env so the token cannot be shadowed by one

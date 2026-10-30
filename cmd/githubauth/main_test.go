@@ -385,6 +385,19 @@ func TestRun(t *testing.T) {
 			wantStdout:  contains("GITHUB_TOKEN=ghs_neverprinted"),
 		},
 		{
+			name: "exec points gh at the instance the token is for",
+			args: func(url string) []string {
+				return []string{
+					"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99",
+					"--base-url", url, "--exec", "--", os.Args[0], "-test.run=^TestExecHelper$",
+				}
+			},
+			env:         map[string]string{"GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "0", "GH_HOST": ""},
+			setupServer: tokenHandler("ghs_hosted"),
+			wantCode:    0,
+			wantStdout:  contains("GH_HOST=127.0.0.1"),
+		},
+		{
 			name: "exec exits as the command it ran did",
 			args: func(url string) []string {
 				return []string{
