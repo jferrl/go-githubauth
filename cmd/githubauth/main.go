@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,7 @@ EXAMPLES
     githubauth token --key - --installation 12345
 
   # Run a command with the token in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere.
+  # The token is revoked when the command exits.
   githubauth token --installation 12345 --exec -- gh pr list
 
 EXIT CODES
@@ -231,10 +233,11 @@ func asCredential(src oauth2.TokenSource, err error) (oauth2.TokenSource, error)
 }
 
 func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
-	fs := newFlagSet("token", "Print an installation access token.", `  # Scope the token to two repositories.
-  githubauth token --installation 12345 --repos api,web
+	fs := newFlagSet("token", "Print an installation access token.", `  # Scope the token to two repositories, with read access to their contents.
+  githubauth token --installation 12345 --repos api,web --permissions contents:read
 
-  # Keep the token out of the terminal: it only ever reaches the child.
+  # Keep the token out of the terminal: it only ever reaches the child, and is
+  # revoked when the child exits.
   githubauth token --installation 12345 --exec -- gh pr list
 
   # Push as the App, once git uses gh for credentials (gh auth setup-git).
@@ -248,6 +251,8 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 
 	installation := fs.Int64("installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
 	repos := fs.String("repos", "", "comma-separated repository names to scope the token to")
+	permissions := fs.String("permissions", "", "comma-separated name:level pairs to scope the token to, e.g. contents:read,pull_requests:write")
+	keep := fs.Bool("keep", false, "under --exec, leave the token valid when the command exits instead of revoking it")
 	baseURL := fs.String("base-url", "", "API base URL, used verbatim (Enterprise Cloud with data residency)")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise Server URL, normalized the way GHES expects")
 
@@ -256,6 +261,9 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	}
 	if err := app.checkExec(fs.Args()); err != nil {
 		return err
+	}
+	if *keep && !app.exec {
+		return usagef("--keep applies only under --exec, which revokes the token when the command exits")
 	}
 	if *installation <= 0 {
 		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
@@ -278,6 +286,13 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	if isSet(fs, "repos") && len(names) == 0 {
 		return usagef("--repos names no repository; omit it for a token covering the whole installation")
 	}
+	perms, err := parsePermissions(*permissions)
+	if err != nil {
+		return err
+	}
+	if isSet(fs, "permissions") && perms == nil {
+		return usagef("--permissions names no permission; omit it for a token with every permission the App has")
+	}
 
 	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
 
@@ -286,16 +301,18 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return err
 	}
 
-	var opts []githubauth.InstallationTokenSourceOpt
+	var urlOpts []githubauth.InstallationTokenSourceOpt
 	switch {
 	case *baseURL != "":
-		opts = append(opts, githubauth.WithBaseURL(*baseURL))
+		urlOpts = append(urlOpts, githubauth.WithBaseURL(*baseURL))
 	case *enterpriseURL != "":
-		opts = append(opts, githubauth.WithEnterpriseURL(*enterpriseURL))
+		urlOpts = append(urlOpts, githubauth.WithEnterpriseURL(*enterpriseURL))
 	}
-	if len(names) > 0 {
+	opts := slices.Clone(urlOpts)
+	if len(names) > 0 || perms != nil {
 		opts = append(opts, githubauth.WithInstallationTokenOptions(&githubauth.InstallationTokenOptions{
 			Repositories: names,
+			Permissions:  perms,
 		}))
 	}
 
@@ -303,7 +320,12 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	if err != nil {
 		return err
 	}
-	return app.emit(tok, fs.Args(), stdin, stdout, stderr)
+	err = app.emit(tok, fs.Args(), stdin, stdout, stderr)
+	// Even a command that failed to start leaves a minted token behind.
+	if app.exec && !*keep {
+		revoke(tok, urlOpts, stderr)
+	}
+	return err
 }
 
 func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
@@ -486,6 +508,45 @@ func splitRepos(v string) []string {
 		}
 	}
 	return out
+}
+
+// parsePermissions reads --permissions into GitHub's permission object, or nil
+// when it names none. A name GitHub would not recognize is reported here,
+// rather than as a 422 that does not say which one.
+//
+// shortcut: only the names InstallationPermissions has fields for are known, so a
+// newer GitHub permission is refused until the struct gains it.
+func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
+	pairs := splitRepos(v)
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	levels := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		name, level, ok := strings.Cut(pair, ":")
+		name, level = strings.TrimSpace(name), strings.TrimSpace(level)
+		if !ok || name == "" || level == "" {
+			return nil, usagef("--permissions %q is not name:level, e.g. contents:read", pair)
+		}
+		levels[name] = level
+	}
+
+	// A map of strings always marshals, and always decodes into the struct.
+	raw, _ := json.Marshal(levels)
+	var perms githubauth.InstallationPermissions
+	_ = json.Unmarshal(raw, &perms)
+
+	// Unmarshal drops unknown names silently, so read back what it kept.
+	raw, _ = json.Marshal(perms)
+	var known map[string]string
+	_ = json.Unmarshal(raw, &known)
+	for _, pair := range pairs {
+		name, _, _ := strings.Cut(pair, ":")
+		if name = strings.TrimSpace(name); known[name] == "" {
+			return nil, usagef("--permissions: unknown permission %q; use GitHub's name, e.g. pull_requests", name)
+		}
+	}
+	return &perms, nil
 }
 
 // envInt64 ignores a malformed value here, before the flags are parsed;

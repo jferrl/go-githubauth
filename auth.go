@@ -452,8 +452,36 @@ func (t *installationTokenSource) setConfigErr(err error) {
 //
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
 func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...InstallationTokenSourceOpt) oauth2.TokenSource {
-	ctx := context.Background()
+	i := newInstallationTokenSource(id, src, opts)
 
+	// A non-positive ID can only produce /app/installations/0/access_tokens and
+	// a 404. Fail like a misconfiguration rather than like a GitHub outage.
+	// It wins over an option's error, as it did when checked first.
+	if id <= 0 {
+		i.configErr = errors.New("installation identifier is required")
+	}
+
+	return ReuseTokenSourceWithSkew(nil, i, i.skew)
+}
+
+// RevokeInstallationToken revokes an installation access token before its hour
+// is up, so a copy that leaked stops working. WithBaseURL, WithEnterpriseURL and
+// WithHTTPClient apply as they do to NewInstallationTokenSource. The other
+// options are ignored.
+//
+// See https://docs.github.com/en/rest/apps/installations?apiVersion=2022-11-28#revoke-an-installation-access-token
+func RevokeInstallationToken(ctx context.Context, token string, opts ...InstallationTokenSourceOpt) error {
+	// The token authenticates its own revocation, in place of the App JWT.
+	i := newInstallationTokenSource(0, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}), opts)
+	if i.configErr != nil {
+		return i.configErr
+	}
+	return i.client.revokeInstallationToken(ctx)
+}
+
+// newInstallationTokenSource applies opts to a source whose requests src
+// authenticates.
+func newInstallationTokenSource(id int64, src oauth2.TokenSource, opts []InstallationTokenSourceOpt) *installationTokenSource {
 	httpClient := cleanHTTPClient()
 	httpClient.Transport = &oauth2.Transport{
 		Source: cachedSource(src),
@@ -462,23 +490,15 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 
 	i := &installationTokenSource{
 		id:     id,
-		ctx:    ctx,
+		ctx:    context.Background(),
 		src:    src,
 		client: newGitHubClient(httpClient),
 		skew:   DefaultExpirySkew,
 	}
-
-	// A non-positive ID can only produce /app/installations/0/access_tokens and
-	// a 404. Fail like a misconfiguration rather than like a GitHub outage.
-	if id <= 0 {
-		i.setConfigErr(errors.New("installation identifier is required"))
-	}
-
 	for _, opt := range opts {
 		opt(i)
 	}
-
-	return ReuseTokenSourceWithSkew(nil, i, i.skew)
+	return i
 }
 
 // cachedSource reuses the App JWT across installation-token requests. A source

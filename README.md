@@ -100,15 +100,22 @@ vault kv get -field=pem secret/github-app |
 ```
 
 `githubauth jwt` prints the App JWT for the few endpoints that need one, `--json` adds the
-expiry, and `--repos` scopes the token to named repositories. Run `githubauth help` for the
-rest.
+expiry, and `--repos` and `--permissions` scope the token to named repositories and to
+less than the App was granted:
+
+```bash
+githubauth token --installation 12345 --repos api,web --permissions contents:read
+```
+
+Run `githubauth help` for the rest.
 
 ### Keeping the token out of your logs
 
 A printed credential stays valid for an hour, in every place your output landed: a CI log,
 a terminal scrollback, a coding agent's transcript. `--exec` runs a command with the token
 in its `$GITHUB_TOKEN` and `$GH_TOKEN` and prints it nowhere, exiting with whatever the
-command exited with:
+command exited with. When the command exits, an installation token is revoked, so a copy
+it left behind stops working. Pass `--keep` if something it started still needs the token:
 
 ```bash
 githubauth token --installation 12345 --exec -- gh pr list

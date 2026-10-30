@@ -11,7 +11,8 @@ hour, and anything that captured your output still has it for that hour: a
 transcript, a CI log, a scrollback buffer.
 
 Prefer `--exec`, which puts the token in the child's `$GITHUB_TOKEN` and
-`$GH_TOKEN` and prints it nowhere:
+`$GH_TOKEN`, prints it nowhere, and revokes an installation token when the child
+exits (`--keep` leaves it valid):
 
 ```bash
 githubauth token --installation 12345 --exec -- gh pr list
@@ -28,10 +29,10 @@ githubauth jwt --exec -- sh -c 'gh api -H "Authorization: Bearer $GITHUB_TOKEN" 
 ```
 
 Print it only when something downstream genuinely needs the string, and prefer a
-short-lived scope when you do:
+narrow scope when you do:
 
 ```bash
-githubauth token --installation 12345 --repos api,web
+githubauth token --installation 12345 --repos api,web --permissions contents:read
 ```
 
 ## The CLI
@@ -45,7 +46,7 @@ githubauth help
 
 Flags shared by both commands: `--client-id` (or `--app-id` for a legacy App),
 `--key`, `--json`, `--exec`, `--agent`. `token` adds `--installation`, `--repos`,
-`--base-url`, `--enterprise-url`. `jwt` adds `--expiry`.
+`--permissions`, `--keep`, `--base-url`, `--enterprise-url`. `jwt` adds `--expiry`.
 
 Every flag falls back to an environment variable — `GITHUB_APP_CLIENT_ID`,
 `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` — so a
@@ -104,6 +105,9 @@ httpClient := oauth2.NewClient(context.Background(), installSrc)
 
 `NewApplicationTokenSource` takes a string Client ID or an int64 App ID. The type
 is inferred. Both sources cache and refresh 30s before expiry.
+
+`RevokeInstallationToken(ctx, token)` ends an installation token before its hour
+is up.
 
 Errors worth branching on: `*githubauth.RateLimitError` (carries `RetryAfter`,
 unwraps to `ErrRateLimited`) and `*githubauth.APIError` (carries `StatusCode`).
