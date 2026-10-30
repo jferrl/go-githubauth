@@ -275,6 +275,8 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return usagef("set --installation or --owner, not both")
 	case strings.Contains(*owner, "/"):
 		return usagef("--owner %q is a repository: pass its account as --owner and the repository as --repos", *owner)
+	case *owner == "." || *owner == "..":
+		return usagef("--owner %q is not an account: pass a user or organization login", *owner)
 	case *owner == "" && *installation <= 0:
 		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
 			return err
@@ -338,10 +340,13 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	if err != nil {
 		return err
 	}
+	if app.exec && !*keep {
+		defer holdSignals()()
+	}
 	err = app.emit(tok, fs.Args(), stdin, stdout, stderr)
 	// Even a command that failed to start leaves a minted token behind.
 	if app.exec && !*keep {
-		revoke(tok, urlOpts, stderr)
+		err = revoke(err, tok, urlOpts, stderr)
 	}
 	return err
 }

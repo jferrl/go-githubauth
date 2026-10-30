@@ -108,22 +108,40 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 // for the library's full minute.
 const revokeTimeout = 10 * time.Second
 
+// holdSignals keeps SIGINT and SIGTERM from killing githubauth until the
+// returned func runs. Held from before the command starts until the token is
+// revoked, a signal in between cannot leave the token valid. revokeTimeout
+// bounds how long they stay held once the command has exited.
+func holdSignals() (release func()) {
+	held := make(chan os.Signal, 1)
+	signal.Notify(held, os.Interrupt, syscall.SIGTERM)
+	return func() { signal.Stop(held) }
+}
+
 // revoke ends the token once the command it was minted for has exited, so a
-// copy left in a child's environment or output stops working. A failure only
-// warns: the exit code stays the command's.
-func revoke(tok *oauth2.Token, opts []githubauth.InstallationTokenSourceOpt, stderr io.Writer) {
+// copy left in a child's environment or output stops working. err is the
+// command's result, returned with a revocation failure added only when
+// githubauth itself failed: one failure report, JSON under --agent, then
+// carries both. Otherwise a failure only warns, and the exit code stays the
+// command's.
+func revoke(err error, tok *oauth2.Token, opts []githubauth.InstallationTokenSourceOpt, stderr io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
 	defer cancel()
-	err := githubauth.RevokeInstallationToken(ctx, tok.AccessToken, opts...)
+	revokeErr := githubauth.RevokeInstallationToken(ctx, tok.AccessToken, opts...)
 	// A 401 means the token is already dead: past its hour, or revoked by the
 	// command itself.
 	var apiErr *githubauth.APIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
-		return
+	if revokeErr == nil || errors.As(revokeErr, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
+		return err
 	}
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "githubauth: the token was not revoked and stays valid until %s: %v\n", tok.Expiry.Format(time.RFC3339), err)
+
+	revokeErr = fmt.Errorf("the token was not revoked and stays valid until %s: %w", tok.Expiry.Format(time.RFC3339), revokeErr)
+	var status exitStatus
+	if err != nil && !errors.As(err, &status) {
+		return errors.Join(err, revokeErr)
 	}
+	_, _ = fmt.Fprintf(stderr, "githubauth: %v\n", revokeErr)
+	return err
 }
 
 // ghHost names the instance behind an API URL the way gh does. github.com and

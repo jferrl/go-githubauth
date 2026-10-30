@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,6 +26,15 @@ func TestExecHelper(t *testing.T) {
 
 	for _, key := range append(execTokenEnv, append(execEnterpriseEnv, "GH_HOST")...) {
 		fmt.Printf("%s=%s\n", key, os.Getenv(key))
+	}
+	// Use the token the way a real command would, so a test can tell whether it
+	// was still valid while the command ran.
+	if url := os.Getenv("GITHUBAUTH_EXEC_CALL"); url != "" {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("Authorization", "Bearer "+os.Getenv("GH_TOKEN"))
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
 	}
 	if os.Getenv("GITHUBAUTH_EXEC_SELF_TERM") != "" {
 		p, _ := os.FindProcess(os.Getpid())

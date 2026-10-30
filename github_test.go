@@ -1575,6 +1575,7 @@ func TestFindInstallationID(t *testing.T) {
 			},
 			wantPath: "/api/v3/users/acme/installation", wantID: 7,
 		},
+		{name: "an owner is escaped into one segment", owner: "%2F..%", status: http.StatusOK, body: `{"id":5}`, wantPath: "/users/%2F..%/installation", wantID: 5},
 		{name: "not installed", owner: "acme", status: http.StatusNotFound, body: `{"message":"Not Found"}`, wantPath: "/users/acme/installation", wantErr: "status 404"},
 		{name: "a body that is not JSON", owner: "acme", status: http.StatusOK, body: `<html>`, wantPath: "/users/acme/installation", wantErr: "failed to decode response"},
 		{name: "an answer without an ID", owner: "acme", status: http.StatusOK, body: `{"token":"ghs_x"}`, wantPath: "/users/acme/installation", wantErr: "without an ID"},

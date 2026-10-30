@@ -363,7 +363,9 @@ func (c *githubClient) revokeInstallationToken(ctx context.Context) error {
 // endpoint answers for organizations too, which actions/create-github-app-token
 // relies on as well.
 func (c *githubClient) findInstallationID(ctx context.Context, owner string) (int64, error) {
-	u := c.baseURL.JoinPath("users", owner, "installation")
+	// JoinPath takes escaped elements: a raw "%" would leave the path at the
+	// base URL, and an escaped slash would add a segment.
+	u := c.baseURL.JoinPath("users", url.PathEscape(owner), "installation")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
