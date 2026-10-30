@@ -544,6 +544,14 @@ func TestRun(t *testing.T) {
 			wantStdout:  isExactly("ghs_flagwins"),
 		},
 		{
+			name:       "an explicit --installation 0 is missing, whatever the environment holds",
+			args:       func(string) []string { return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "0"} },
+			env:        map[string]string{"GITHUB_APP_INSTALLATION_ID": "12abc"},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "missing installation ID",
+		},
+		{
 			name: "a request GitHub rejects as invalid is not worth retrying",
 			args: func(url string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "99", "--base-url", url, "--repos", "nope"}

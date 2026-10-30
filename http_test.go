@@ -2,6 +2,7 @@ package githubauth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -90,14 +91,38 @@ func TestInstallationTokenSource_DoesNotLeakJWTOnRedirect(t *testing.T) {
 	}
 }
 
+// TestInstallationTokenSource_KeepsCallersRedirectPolicy checks a same-host
+// redirect still reaches the CheckRedirect of a client passed in.
+func TestInstallationTokenSource_KeepsCallersRedirectPolicy(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
+	}))
+	defer api.Close()
+
+	var consulted bool
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		consulted = true
+		return http.ErrUseLastResponse
+	}}
+	jwt := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "app-jwt", Expiry: time.Now().Add(time.Hour)})
+
+	_, _ = NewInstallationTokenSource(1, jwt, WithBaseURL(api.URL), WithHTTPClient(client)).Token()
+
+	if !consulted {
+		t.Error("the caller's CheckRedirect was not consulted on a same-host redirect")
+	}
+}
+
 func TestSameHostRedirect(t *testing.T) {
 	tests := []struct {
 		name string
 		from string
 		to   string
+		hops int
 		want error
 	}{
 		{name: "same host", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b", want: nil},
+		{name: "a tenth hop", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b", hops: 10, want: errors.New("stopped after 10 redirects")},
 		{name: "same host upgraded to TLS", from: "http://ghe.example.com/a", to: "https://ghe.example.com/a", want: nil},
 		{name: "another host", from: "https://ghe.example.com/a", to: "https://evil.example.com/a", want: http.ErrUseLastResponse},
 		{name: "TLS dropped", from: "https://ghe.example.com/a", to: "http://ghe.example.com/a", want: http.ErrUseLastResponse},
@@ -107,7 +132,11 @@ func TestSameHostRedirect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			from := httptest.NewRequest(http.MethodPost, tt.from, nil)
 			to := httptest.NewRequest(http.MethodPost, tt.to, nil)
-			if got := sameHostRedirect(to, []*http.Request{from}); !errors.Is(got, tt.want) {
+			via := []*http.Request{from}
+			for len(via) < tt.hops {
+				via = append(via, from)
+			}
+			if got := sameHostRedirect(to, via); fmt.Sprint(got) != fmt.Sprint(tt.want) {
 				t.Errorf("sameHostRedirect() = %v, want %v", got, tt.want)
 			}
 		})
