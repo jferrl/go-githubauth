@@ -507,15 +507,6 @@ func TestRun(t *testing.T) {
 			wantStderr: `"contents" is not name:level`,
 		},
 		{
-			name: "an unknown permission is named",
-			args: func(string) []string {
-				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--permissions", "contents:read,pull-requests:write"}
-			},
-			wantCode:   exitUsage,
-			wantStdout: isEmpty,
-			wantStderr: `unknown permission "pull-requests"`,
-		},
-		{
 			name: "exec without a command is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--exec"}
@@ -761,6 +752,11 @@ func TestTokenRequests(t *testing.T) {
 			name:     "repos and permissions go in one request",
 			args:     []string{"--repos", "api", "--permissions", "contents:read, pull_requests:write"},
 			wantBody: `{"repositories":["api"],"permissions":{"contents":"read","pull_requests":"write"}}`,
+		},
+		{
+			name:     "a permission newer than the library still reaches GitHub",
+			args:     []string{"--permissions", "installation_repositories:write"},
+			wantBody: `{"permissions":{"installation_repositories":"write"}}`,
 		},
 		{
 			name:       "exec revokes the token when the command exits",
