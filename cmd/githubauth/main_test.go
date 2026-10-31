@@ -616,6 +616,34 @@ func TestRun(t *testing.T) {
 			quietStderr: true,
 		},
 		{
+			name: "agent after a malformed flag still renders the failure as JSON",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "--agent"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			name: "an explicit --json=true after a malformed flag is on",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "--json=true"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			// The flag package stops at the first argument that is not a flag,
+			// so a --json past it is the command's, not githubauth's.
+			name: "a --json past a positional argument is not read",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "gh", "--json"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+		},
+		{
 			name: "a --json value that is not a bool is not on",
 			args: func(string) []string {
 				return []string{"token", "--json=maybe", "--bogus"}
