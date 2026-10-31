@@ -78,6 +78,13 @@ and Windows, on amd64 and arm64 — or build it yourself:
 go install github.com/jferrl/go-githubauth/cmd/githubauth@latest
 ```
 
+From v1.12.0 it is also a [GitHub CLI](https://cli.github.com) extension, run as
+`gh githubauth`:
+
+```bash
+gh extension install jferrl/gh-githubauth
+```
+
 ```bash
 githubauth token --client-id Iv1.abc --key app.pem --installation 12345
 ```
