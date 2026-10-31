@@ -476,7 +476,9 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 }
 
 // RevokeInstallationToken revokes an installation access token before its hour
-// is up, so a copy that leaked stops working. WithBaseURL, WithEnterpriseURL and
+// is up, so a copy that leaked stops working. A source from
+// NewInstallationTokenSource that handed the token out does not know, and keeps
+// returning it from its cache until it expires; build a new source instead. WithBaseURL, WithEnterpriseURL and
 // WithHTTPClient apply as they do to NewInstallationTokenSource. The other
 // options are ignored.
 //

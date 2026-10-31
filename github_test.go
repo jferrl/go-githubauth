@@ -1523,6 +1523,35 @@ func TestRevokeInstallationToken(t *testing.T) {
 	}
 }
 
+// Test_createInstallationToken_BoundsResponse checks a server sending more than
+// any real answer cannot make the client read it all.
+func Test_createInstallationToken_BoundsResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"token":"`)
+		_, _ = io.Copy(w, io.LimitReader(repeatReader('a'), maxResponseBytes+1))
+		_, _ = io.WriteString(w, `"}`)
+	}))
+	defer server.Close()
+
+	_, err := newClientForServer(t, server).createInstallationToken(context.Background(), 1, nil)
+	if err == nil || !strings.Contains(err.Error(), "failed to decode response") {
+		t.Errorf("err = %v, want the oversized response refused", err)
+	}
+}
+
+// repeatReader is an endless stream of one byte.
+type repeatReader byte
+
+func (r repeatReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
+}
+
 // Test_createInstallationToken_RefusesAmbiguousPermission checks a permission
 // named twice is refused before anything is sent, rather than one silently
 // winning.

@@ -57,6 +57,7 @@ func clearEnv(t *testing.T) {
 		_ = os.Unsetenv(key)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GH_HOST", "")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
 
@@ -547,6 +548,47 @@ func TestRun(t *testing.T) {
 			wantStderr: `--owner ".." is not an account`,
 		},
 		{
+			// A base64 key, the usual CI-secret form, is read as a path; the
+			// error must not repeat it into a log.
+			name: "a key that is not PEM is not echoed",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", strings.Repeat("LS0tLS1CRUdJTi", 30), "--installation", "9"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "a base64-encoded key needs decoding first",
+		},
+		{
+			name: "a missing key file is still named",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", "no-such-app.pem", "--installation", "9"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "no-such-app.pem",
+		},
+		{
+			name: "an exported GH_HOST for another instance is refused before minting",
+			args: func(url string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--base-url", url, "--exec", "--", "true"}
+			},
+			env:         map[string]string{"GH_HOST": "github.com"},
+			setupServer: statusHandler(http.StatusInternalServerError),
+			wantCode:    exitUsage,
+			wantStdout:  isEmpty,
+			wantStderr:  "$GH_HOST is github.com but the credential is for 127.0.0.1:",
+		},
+		{
+			// Only the caller knows which instance a JWT's App lives on.
+			name: "an exported GH_HOST is left to the JWT",
+			args: func(string) []string {
+				return append([]string{"jwt", "--client-id", "Iv1.abc", "--key", keyPath, "--exec", "--"}, helperArgv()...)
+			},
+			env:        map[string]string{"GH_HOST": "ghe.example.com", "GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "0"},
+			wantCode:   0,
+			wantStdout: contains("GH_HOST=ghe.example.com"),
+		},
+		{
 			name: "keep without exec is misuse",
 			args: func(string) []string {
 				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "9", "--keep"}
@@ -842,6 +884,12 @@ func TestTokenRequests(t *testing.T) {
 			origin:   func(u string) string { return u + "/acme/api.git" },
 			wantMint: "/app/installations/123/access_tokens",
 			wantBody: `{"repositories":["api"]}`,
+		},
+		{
+			// git push would send the token to the remote's port, not the API's.
+			name:     "a clone's https origin on another port is ignored",
+			origin:   func(u string) string { return strings.Replace(u, "127.0.0.1:", "127.0.0.1:1", 1) + "/acme/api.git" },
+			wantCode: exitUsage,
 		},
 		{
 			name:     "a clone's origin on another host is ignored",
@@ -1366,14 +1414,16 @@ func TestParseRemote(t *testing.T) {
 		host, owner, repo string
 		ok                bool
 	}{
-		{remote: "https://github.com/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
-		{remote: "https://github.com/acme/api", host: "github.com", owner: "acme", repo: "api", ok: true},
-		{remote: "https://x-access-token:secret@github.com/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://github.com/acme/api.git", host: "github.com:443", owner: "acme", repo: "api", ok: true},
+		{remote: "https://github.com/acme/api", host: "github.com:443", owner: "acme", repo: "api", ok: true},
+		{remote: "https://x-access-token:secret@github.com/acme/api.git", host: "github.com:443", owner: "acme", repo: "api", ok: true},
 		{remote: "git@github.com:acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
 		{remote: "github.com:acme/api", host: "github.com", owner: "acme", repo: "api", ok: true},
 		{remote: "ssh://git@ghe.example.com:2222/acme/api.git", host: "ghe.example.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://ghe.example.com:9443/acme/api.git", host: "ghe.example.com:9443", owner: "acme", repo: "api", ok: true},
+		{remote: "https://ghe.example.com:443/acme/api.git", host: "ghe.example.com:443", owner: "acme", repo: "api", ok: true},
 		{remote: "ssh://git@ssh.github.com:443/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
-		{remote: "https://octo.ghe.com/acme/api/", host: "octo.ghe.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://octo.ghe.com/acme/api/", host: "octo.ghe.com:443", owner: "acme", repo: "api", ok: true},
 		{remote: "https://github.com/acme"},
 		{remote: "https://github.com/acme/api/tree/main"},
 		{remote: "/srv/git/api.git"},
@@ -1389,6 +1439,82 @@ func TestParseRemote(t *testing.T) {
 			if host != tt.host || owner != tt.owner || repo != tt.repo || ok != tt.ok {
 				t.Errorf("parseRemote(%q) = %q, %q, %q, %v, want %q, %q, %q, %v",
 					tt.remote, host, owner, repo, ok, tt.host, tt.owner, tt.repo, tt.ok)
+			}
+		})
+	}
+}
+
+// TestReadKeyDoesNotEchoKey checks the whole value of a key that is not PEM
+// stays out of the error, whatever renders it.
+func TestReadKeyDoesNotEchoKey(t *testing.T) {
+	t.Parallel()
+
+	key := strings.Repeat("LS0tLS1CRUdJTi", 30)
+	_, err := readKey(key, strings.NewReader(""))
+	if err == nil || strings.Contains(err.Error(), key[:40]) {
+		t.Errorf("readKey() err = %v, want an error without the key", err)
+	}
+}
+
+// TestOriginRepoKeepsTheKeyFromGit checks the git that reads the origin remote
+// does not get the App's key either: a wrapper logging its environment would
+// otherwise leak it.
+func TestOriginRepoKeepsTheKeyFromGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake git is a shell script")
+	}
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "seen")
+	script := "#!/bin/sh\nprintf %s \"$GITHUB_APP_PRIVATE_KEY\" > " + seen + "\necho https://github.com/acme/api.git\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----secret")
+
+	if owner, repo, ok := originRepo(""); !ok || owner != "acme" || repo != "api" {
+		t.Fatalf("originRepo() = %q, %q, %v, want acme, api, true", owner, repo, ok)
+	}
+	if got, _ := os.ReadFile(seen); len(got) != 0 {
+		t.Errorf("git saw $GITHUB_APP_PRIVATE_KEY = %q, want it empty", got)
+	}
+}
+
+// TestOriginRepoHost checks which clones may name the repository for a token:
+// an http(s) remote is the instance itself, so its port must be the API's.
+func TestOriginRepoHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake git is a shell script")
+	}
+
+	tests := []struct {
+		remote, apiHost string
+		ok              bool
+	}{
+		{remote: "https://github.com/acme/api.git", apiHost: "", ok: true},
+		{remote: "git@github.com:acme/api.git", apiHost: "", ok: true},
+		{remote: "ssh://git@ssh.github.com:443/acme/api.git", apiHost: "", ok: true},
+		{remote: "https://GHE.example.com/acme/api.git", apiHost: "ghe.example.com", ok: true},
+		{remote: "ssh://git@ghe.example.com:2222/acme/api.git", apiHost: "ghe.example.com:8443", ok: true},
+		{remote: "https://ghe.example.com:8443/acme/api.git", apiHost: "ghe.example.com:8443", ok: true},
+		// git push would hand the token to the service on 443.
+		{remote: "https://ghe.example.com/acme/api.git", apiHost: "ghe.example.com:8443"},
+		{remote: "https://ghe.example.com:9443/acme/api.git", apiHost: "ghe.example.com:8443"},
+		{remote: "https://github.com/acme/api.git", apiHost: "ghe.example.com"},
+		{remote: "https://[::1]/acme/api.git", apiHost: "[::1]", ok: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.remote+"@"+tt.apiHost, func(t *testing.T) {
+			dir := t.TempDir()
+			script := "#!/bin/sh\necho '" + tt.remote + "'\n"
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+
+			if _, _, ok := originRepo(tt.apiHost); ok != tt.ok {
+				t.Errorf("originRepo(%q) with origin %s: ok = %v, want %v", tt.apiHost, tt.remote, ok, tt.ok)
 			}
 		})
 	}

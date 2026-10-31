@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -165,7 +166,7 @@ func (a *appFlags) bind(fs *flag.FlagSet, out *output) {
 
 	fs.StringVar(&a.clientID, "client-id", os.Getenv("GITHUB_APP_CLIENT_ID"), "App client ID, e.g. Iv1.1234567890abcdef ($GITHUB_APP_CLIENT_ID)")
 	fs.Int64Var(&a.appID, "app-id", envInt64("GITHUB_APP_ID"), "legacy numeric App ID, for an App with no client ID ($GITHUB_APP_ID)")
-	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM ($GITHUB_APP_PRIVATE_KEY)")
+	fs.StringVar(&a.key, "key", os.Getenv("GITHUB_APP_PRIVATE_KEY"), "PEM private key: file path, \"-\" for stdin, or the PEM, best from $GITHUB_APP_PRIVATE_KEY since argv is visible to other users")
 	fs.BoolVar(&out.json, "json", false, "print {\"token\":...,\"expires_at\":...} instead of the bare token, with the permissions and repositories GitHub granted an installation token")
 	fs.BoolVar(&a.exec, "exec", false, "run the command after -- with the credential in $GITHUB_TOKEN and $GH_TOKEN, printing it nowhere; $GH_HOST is set for an Enterprise or data residency host")
 	fs.BoolVar(&out.agent, "agent", out.agent, "report failures as one JSON document on stdout (on when a coding agent is detected)")
@@ -182,6 +183,20 @@ func (a *appFlags) checkExec(argv []string) error {
 		return usagef("--exec prints no credential, so --json has nothing to format")
 	case !a.exec && len(argv) > 0:
 		return usagef("unexpected argument %q: pass --exec to run a command with the credential", argv[0])
+	}
+	return nil
+}
+
+// checkGHHost refuses an exported GH_HOST that names another instance than
+// the one an installation token is for, before anything is minted: gh would
+// send the token there. The JWT is not checked: it is signed locally, and only
+// the caller knows which instance its App lives on. A caller whose proxy really serves it sets GH_HOST inside
+// the command instead, where nothing else in the environment can choose it.
+func (a *appFlags) checkGHHost() error {
+	want := cmp.Or(a.host, "github.com")
+	// Compared exactly: gh treats github.com:443 as another host than github.com.
+	if h := os.Getenv("GH_HOST"); a.exec && h != "" && !strings.EqualFold(h, want) {
+		return usagef("$GH_HOST is %s but the credential is for %s, so gh would send it to %s: unset GH_HOST, or set it inside the command, --exec -- env GH_HOST=%s gh ..., if %s serves this credential", h, want, h, h, h)
 	}
 	return nil
 }
@@ -304,6 +319,9 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return err
 	}
 	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
+	if err := app.checkGHHost(); err != nil {
+		return err
+	}
 	// Nothing names the installation, so the clone the command runs in does,
 	// the way actions/create-github-app-token defaults to the current
 	// repository. The token covers that repository alone.
@@ -522,6 +540,10 @@ func printFlags(w io.Writer, fs *flag.FlagSet) {
 	}
 }
 
+// maxKeyPathLen is the longest --key value repeated in an error. A private
+// key, PEM or base64, is well over it.
+const maxKeyPathLen = 256
+
 // readKey resolves --key, which is a file path, "-" for stdin, or the PEM
 // itself so that $GITHUB_APP_PRIVATE_KEY can be passed straight through.
 func readKey(v string, stdin io.Reader) ([]byte, error) {
@@ -534,7 +556,13 @@ func readKey(v string, stdin io.Reader) ([]byte, error) {
 	pem, err := os.ReadFile(v)
 	if err != nil {
 		// The flag was well-formed but points nowhere, which is the caller's
-		// invocation to fix rather than anything GitHub was asked about.
+		// invocation to fix rather than anything GitHub was asked about. A key
+		// that is not PEM, such as base64 from a CI secret, lands here too, so
+		// the value is named only when it is short enough to be a path.
+		var pe *os.PathError
+		if errors.As(err, &pe) && len(v) > maxKeyPathLen {
+			return nil, usagef("reading private key: --key is neither PEM, %q, nor a file it can open (%v); a base64-encoded key needs decoding first", "-", pe.Err)
+		}
 		return nil, usagef("reading private key: %v", err)
 	}
 	return pem, nil
@@ -594,12 +622,28 @@ func splitOwner(names []string) ([]string, string, error) {
 // its origin remote, when that remote is on host, as gh names it: empty for
 // github.com. A clone of another host says nothing about this one.
 func originRepo(host string) (owner, repo string, ok bool) {
-	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	git := exec.Command("git", "remote", "get-url", "origin")
+	git.Env = childEnviron()
+	out, err := git.Output()
 	if err != nil {
 		return "", "", false
 	}
 	remoteHost, owner, repo, ok := parseRemote(strings.TrimSpace(string(out)))
-	if !ok || !strings.EqualFold(remoteHost, cmp.Or(host, "github.com")) {
+	want := cmp.Or(host, "github.com")
+	// An http(s) remote is served by the instance itself, so its port has to
+	// agree too, git push would hand the token to it; gh's port is 443 unless
+	// the API names another. An ssh remote's port says nothing about the
+	// API's, so only the host is compared.
+	wantHost, wantPort, err := net.SplitHostPort(want)
+	if err != nil {
+		wantHost, wantPort = strings.Trim(want, "[]"), "443"
+	}
+	if h, p, err := net.SplitHostPort(remoteHost); err == nil {
+		ok = ok && strings.EqualFold(h, wantHost) && p == wantPort
+	} else {
+		ok = ok && strings.EqualFold(remoteHost, wantHost)
+	}
+	if !ok {
 		return "", "", false
 	}
 	return owner, repo, true
@@ -611,6 +655,11 @@ func parseRemote(remote string) (host, owner, repo string, ok bool) {
 	var path string
 	if u, err := url.Parse(remote); err == nil && u.Scheme != "" && u.Host != "" {
 		host, path = u.Hostname(), u.Path
+		// An http(s) remote is served by the instance itself, so it carries its
+		// port, default included; see originRepo.
+		if u.Scheme == "http" || u.Scheme == "https" {
+			host = net.JoinHostPort(host, cmp.Or(u.Port(), map[string]string{"http": "80", "https": "443"}[u.Scheme]))
+		}
 	} else if userHost, p, found := strings.Cut(remote, ":"); found && !strings.Contains(userHost, "/") {
 		_, host, _ = strings.Cut(userHost, "@")
 		host = cmp.Or(host, userHost)

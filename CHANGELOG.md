@@ -17,15 +17,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 `githubauth token --exec` now revokes the token when the command exits, and the CLI can
-find the installation and narrow the token on its own. Three changes can affect existing
-code or scripts; they are listed under Changed.
+find the installation and narrow the token on its own. A security review closed six
+ways a credential could reach somewhere it should not, listed under Security. Four
+changes can affect existing code or scripts; they are listed under Changed.
+
+### Security
+
+- `githubauth token --exec` and `jwt --exec` no longer pass `$GITHUB_APP_PRIVATE_KEY` to
+  the command, nor to the `git` that reads a clone's origin, in any letter case on
+  Windows. A child that leaked its environment leaked the key that mints tokens for every
+  installation, past `--repos`, `--permissions` and revocation
+- A `--key` that is neither PEM nor a readable file, such as a base64-encoded key from a CI
+  secret, was repeated in full in the error, and so in logs and agent transcripts. The
+  error no longer includes a value longer than a path
+- `--exec` set `$GH_HOST` without the API URL's port, so `gh` sent the credential to port
+  443 of that host. The port is kept, and a clone's https origin must name the same port
+  as the API for the token to be scoped to it
+- An exported `$GH_HOST` naming another instance than an installation token's made `gh`
+  send the token there. `githubauth token --exec` now exits 2 before minting (see Changed).
+  The JWT is not checked: it is signed locally, and only you know which instance its App
+  lives on
+- A SIGINT sent to githubauth alone, as a supervisor does, left the command running with the
+  credential. On Linux and macOS, unless the command is in the terminal's foreground job,
+  where a Ctrl-C reaches it directly, SIGINT is now passed on like SIGTERM
+- Every GitHub Action in the workflows is pinned to a commit. The release job holds the
+  token that publishes the Homebrew cask and the gh extension, and a moved tag could have
+  run code with it. A successful API response is also capped at 16 MiB
 
 ### Added
 
 - `RevokeInstallationToken` ends an installation token before its hour is up.
   `githubauth token --exec` calls it once the command exits; `--keep` leaves the token
   valid. A revocation that fails is reported on stderr, the token then stays valid until
-  it expires, and the exit code stays the command's (#87, #88)
+  it expires, and the exit code stays the command's. A cached source that handed the token
+  out keeps returning it, so build a new one (#87, #88)
 - `githubauth token --permissions contents:read,pull_requests:write` scopes the token
   below what the App was granted. Any permission name GitHub has is accepted; GitHub
   refuses one it does not know with a 422, which exits 2 (#87, #89)
@@ -46,6 +71,10 @@ code or scripts; they are listed under Changed.
 - **`githubauth token --exec` revokes the token when the command exits.** Anything the
   command leaves running on the token starts getting 401s. `--keep` restores the old
   behaviour (#87)
+- **An exported `$GH_HOST` that differs from the installation token's instance exits 2**
+  under `token --exec`, before anything is minted. It used to be kept, which v1.11.0 suggested for a
+  `--base-url` proxy in front of github.com; set it inside the command instead:
+  `--exec -- env GH_HOST=github.com gh …`
 - **`InstallationPermissions` is no longer comparable**, because `Other` is a map. Code
   that compares two values with `==` or uses one as a map key no longer compiles (#88)
 - **Comparing installation token values, `*a == *b`, now panics** when GitHub's answer

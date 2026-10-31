@@ -24,8 +24,10 @@ func TestExecHelper(t *testing.T) {
 		t.Skip("helper process for the --exec tests")
 	}
 
-	for _, key := range append(execTokenEnv, append(execEnterpriseEnv, "GH_HOST")...) {
-		fmt.Printf("%s=%s\n", key, os.Getenv(key))
+	if os.Getenv("GITHUBAUTH_EXEC_QUIET") == "" {
+		for _, key := range append(execTokenEnv, append(execEnterpriseEnv, "GH_HOST", "GITHUB_APP_PRIVATE_KEY")...) {
+			fmt.Printf("%s=%s\n", key, os.Getenv(key))
+		}
 	}
 	// Use the token the way a real command would, so a test can tell whether it
 	// was still valid while the command ran.
@@ -68,6 +70,37 @@ func TestRunWithToken(t *testing.T) {
 			if !strings.Contains(stdout.String(), key+"=ghs_secret") {
 				t.Errorf("child stdout = %q, want the token in $%s", stdout.String(), key)
 			}
+		}
+	})
+
+	t.Run("githubauth itself writes nothing", func(t *testing.T) {
+		t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
+		t.Setenv("GITHUBAUTH_EXEC_CODE", "0")
+		t.Setenv("GITHUBAUTH_EXEC_QUIET", "1")
+
+		var stdout, stderr bytes.Buffer
+		if err := runWithToken(helperArgv(), tok, "", strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("runWithToken() error = %v", err)
+		}
+		// The test binary's own PASS line is all a silent child leaves.
+		if strings.Contains(stdout.String()+stderr.String(), "ghs_secret") {
+			t.Errorf("output = %q / %q, want the token nowhere", stdout.String(), stderr.String())
+		}
+	})
+
+	// The child needs the token for an hour, not the key that mints tokens for
+	// every installation.
+	t.Run("the App's private key does not reach the child", func(t *testing.T) {
+		t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
+		t.Setenv("GITHUBAUTH_EXEC_CODE", "0")
+		t.Setenv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----secret")
+
+		var stdout, stderr bytes.Buffer
+		if err := runWithToken(helperArgv(), tok, "", strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("runWithToken() error = %v", err)
+		}
+		if !strings.Contains(stdout.String(), "GITHUB_APP_PRIVATE_KEY=\n") {
+			t.Errorf("child stdout = %q, want $GITHUB_APP_PRIVATE_KEY empty", stdout.String())
 		}
 	})
 
@@ -197,6 +230,32 @@ func TestRunWithToken(t *testing.T) {
 		}
 	})
 
+	// A supervisor stopping githubauth with SIGINT, with no terminal to have
+	// sent the child its own, would otherwise leave the child running.
+	t.Run("SIGINT is forwarded to the child outside the terminal's foreground", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("no signals on windows")
+		}
+		foreground = func(int) bool { return false }
+		t.Cleanup(func() { foreground = inForeground })
+		t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
+		t.Setenv("GITHUBAUTH_EXEC_SLEEP", "1")
+
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			p, _ := os.FindProcess(os.Getpid())
+			_ = p.Signal(os.Interrupt)
+		}()
+
+		var stdout, stderr bytes.Buffer
+		err := runWithToken(helperArgv(), tok, "", strings.NewReader(""), &stdout, &stderr)
+
+		var status exitStatus
+		if !errors.As(err, &status) || int(status) != 128+int(syscall.SIGINT) {
+			t.Errorf("runWithToken() error = %v, want exitStatus %d", err, 128+int(syscall.SIGINT))
+		}
+	})
+
 	// A SIGTERM sent to githubauth alone would otherwise leave the child
 	// running with the credential in its environment.
 	t.Run("SIGTERM is forwarded to the child", func(t *testing.T) {
@@ -239,7 +298,15 @@ func TestGhHost(t *testing.T) {
 		{apiURL: "https://github.example.com", want: "github.example.com"},
 		// An Enterprise Server named api.* is that host, not a subdomain of it.
 		{apiURL: "https://api.example.com/api/v3/", want: "api.example.com"},
-		{apiURL: "https://ghe.example.com:8443/api/v3/", want: "ghe.example.com"},
+		// gh honours the port, and without it the credential goes to 443.
+		{apiURL: "https://ghe.example.com:8443/api/v3/", want: "ghe.example.com:8443"},
+		{apiURL: "https://ghe.example.com:443/api/v3/", want: "ghe.example.com"},
+		{apiURL: "http://[::1]:8080/", want: "[::1]:8080"},
+		{apiURL: "https://[::1]/api/v3/", want: "[::1]"},
+		// gh speaks https, so an http port is kept and fails rather than moves.
+		{apiURL: "http://ghe.example.com:80/", want: "ghe.example.com:80"},
+		// With a port gh would not restore api., so the host is left whole.
+		{apiURL: "https://api.octo.ghe.com:8443/", want: "api.octo.ghe.com:8443"},
 	}
 
 	for _, tt := range tests {
@@ -265,5 +332,18 @@ func TestEnvironWithout(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("environWithout()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestEnvironWithoutFoldsWhereTheOSDoes checks the private key is dropped
+// whatever its case on Windows, where the OS reads it case-insensitively.
+func TestEnvironWithoutFoldsWhereTheOSDoes(t *testing.T) {
+	was := foldEnvNames
+	foldEnvNames = true
+	t.Cleanup(func() { foldEnvNames = was })
+
+	got := environWithout([]string{"github_app_private_key=pem", "PATH=/bin"}, "GITHUB_APP_PRIVATE_KEY")
+	if len(got) != 1 || got[0] != "PATH=/bin" {
+		t.Errorf("environWithout() = %q, want only PATH", got)
 	}
 }
