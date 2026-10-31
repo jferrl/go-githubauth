@@ -14,6 +14,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [Unreleased]
+
+`githubauth token --exec` now revokes the token when the command exits, and the CLI can
+find the installation and narrow the token on its own. Three changes can affect existing
+code or scripts; they are listed under Changed.
+
+### Added
+
+- `RevokeInstallationToken` ends an installation token before its hour is up.
+  `githubauth token --exec` calls it once the command exits; `--keep` leaves the token
+  valid. A revocation that fails is reported on stderr, the token then stays valid until
+  it expires, and the exit code stays the command's (#87, #88)
+- `githubauth token --permissions contents:read,pull_requests:write` scopes the token
+  below what the App was granted. Any permission name GitHub has is accepted; GitHub
+  refuses one it does not know with a 422, which exits 2 (#87, #89)
+- `InstallationPermissions.Other` requests, and keeps when decoding, a permission the
+  struct has no field for, such as `installation_repositories` (#88, #90)
+- `FindInstallationID` and `githubauth token --owner acme` find the installation on a user
+  or organization. `--repos acme/api` does the same from an `owner/` prefix (#88, #90)
+- Inside a clone, with no installation named, `githubauth token` scopes the token to the
+  repository its `origin` remote names, when that remote is on the same host (#92)
+- An installation token carries what GitHub granted in its oauth2 Extra fields:
+  `ExtraPermissions` and, for a token limited to some repositories, `ExtraRepositories`.
+  `githubauth token --json` prints both (#90)
+- The CLI is a GitHub CLI extension: `gh extension install jferrl/gh-githubauth`, run as
+  `gh githubauth` (#91)
+
+### Changed
+
+- **`githubauth token --exec` revokes the token when the command exits.** Anything the
+  command leaves running on the token starts getting 401s. `--keep` restores the old
+  behaviour (#87)
+- **`InstallationPermissions` is no longer comparable**, because `Other` is a map. Code
+  that compares two values with `==` or uses one as a map key no longer compiles (#88)
+- **Comparing installation token values, `*a == *b`, now panics** when GitHub's answer
+  carried their scope, because their Extra holds a map, as it does for any oauth2 token
+  decoded from JSON. Comparing the `*oauth2.Token` pointers is unaffected; to compare
+  tokens, compare `AccessToken` (#90)
+
+### Fixed
+
+- The exit-2 hint for a 422 names `--permissions` as well as `--repos`, and the exit-5
+  hint for a 404 names `--owner` (#88)
+
 ## [v1.11.0] - 2026-10-30
 
 `--exec` now points `gh` at the instance the token is for. One change alters behaviour;
