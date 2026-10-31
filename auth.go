@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
@@ -57,65 +56,49 @@ const (
 	bearerTokenType = "Bearer"
 )
 
-// ReuseTokenSourceWithSkew wraps src so cached tokens are refreshed proactively,
-// skew before their expiry. oauth2.ReuseTokenSource refreshes only once exp has
-// passed (via oauth2.Token.Valid), so a request that starts at T-100ms with a
-// token expiring at T can arrive at GitHub already expired and yield a 401 the
-// caller must manually retry. This wrapper refreshes when
-// time.Until(t.Expiry) <= skew, cutting out that race.
+// ReuseTokenSourceWithSkew wraps src so a cached token is refreshed skew before
+// it expires, rather than oauth2's default of 10s, so a request that starts
+// close to expiry does not reach GitHub with a dead token and earn a 401.
 //
-// If skew is zero or negative the wrapper delegates to oauth2.ReuseTokenSource,
-// preserving its exact behavior. An initial non-nil t is used until it needs
-// refresh under the same rule. The returned source is safe for concurrent use;
-// concurrent Token calls that find the cache stale collapse into a single
-// upstream fetch.
+// It is oauth2.ReuseTokenSourceWithExpiry, which oauth2.NewClient recognises
+// and uses as is rather than adding a cache of its own that would refresh 10s
+// before expiry whatever skew says. A zero or negative skew gives
+// oauth2.ReuseTokenSource. An initial non-nil t is used until it needs refresh.
+// The returned source is safe for concurrent use, and concurrent Token calls
+// that find the cache stale collapse into a single upstream fetch.
 func ReuseTokenSourceWithSkew(t *oauth2.Token, src oauth2.TokenSource, skew time.Duration) oauth2.TokenSource {
 	if skew <= 0 {
 		return oauth2.ReuseTokenSource(t, src)
 	}
-	return &reuseTokenSourceWithSkew{
-		t:    t,
-		src:  src,
-		skew: skew,
-	}
+	// oauth2's cache writes its window into each token it holds. Copies keep
+	// that write off tokens the caller or src shares, such as a
+	// StaticTokenSource's, which two caches would otherwise race on.
+	return oauth2.ReuseTokenSourceWithExpiry(copyToken(t), copyingSource{src}, skew)
 }
 
-type reuseTokenSourceWithSkew struct {
-	mu   sync.Mutex
-	t    *oauth2.Token
-	src  oauth2.TokenSource
-	skew time.Duration
-}
+// copyingSource returns a copy of each token src returns.
+type copyingSource struct{ src oauth2.TokenSource }
 
-// Token returns the cached token if it is still valid beyond the configured
-// skew, otherwise it calls the underlying source and caches the result.
-func (r *reuseTokenSourceWithSkew) Token() (*oauth2.Token, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.valid() {
-		return r.t, nil
-	}
-	t, err := r.src.Token()
+func (c copyingSource) Token() (*oauth2.Token, error) {
+	t, err := c.src.Token()
 	if err != nil {
 		return nil, err
 	}
-	r.t = t
-	return t, nil
+	return copyToken(t), nil
 }
 
-func (r *reuseTokenSourceWithSkew) valid() bool {
-	if r.t == nil || r.t.AccessToken == "" {
-		return false
+func copyToken(t *oauth2.Token) *oauth2.Token {
+	if t == nil {
+		return nil
 	}
-	if r.t.Expiry.IsZero() {
-		return true
-	}
-	return time.Until(r.t.Expiry) > r.skew
+	c := *t
+	return &c
 }
 
-// Identifier constrains GitHub App identifiers to int64 (App ID) or string (Client ID).
+// Identifier constrains GitHub App identifiers to an integer App ID or a string
+// Client ID. int is admitted so an untyped constant such as 12345 is accepted.
 type Identifier interface {
-	~int64 | ~string
+	~int64 | ~int | ~string
 }
 
 // applicationTokenSource generates GitHub App JWTs for authentication.
@@ -130,7 +113,8 @@ type applicationTokenSource struct {
 	skew       time.Duration
 }
 
-// ApplicationTokenOpt is a functional option for configuring an applicationTokenSource.
+// ApplicationTokenOpt configures NewApplicationTokenSource and
+// NewApplicationTokenSourceFromSigner.
 type ApplicationTokenOpt func(*applicationTokenSource)
 
 // WithApplicationTokenExpiration sets the JWT expiration duration.
@@ -142,19 +126,20 @@ type ApplicationTokenOpt func(*applicationTokenSource)
 // Invalid values default to 10 minutes.
 // See https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app#about-json-web-tokens-jwts
 func WithApplicationTokenExpiration(exp time.Duration) ApplicationTokenOpt {
+	// Normalized once, here: an option is a value callers may share across
+	// goroutines, so applying it must not write to what it captured.
+	if exp > DefaultApplicationTokenExpiration || exp <= minApplicationTokenExpiration {
+		exp = DefaultApplicationTokenExpiration
+	}
 	return func(a *applicationTokenSource) {
-		if exp > DefaultApplicationTokenExpiration || exp <= minApplicationTokenExpiration {
-			exp = DefaultApplicationTokenExpiration
-		}
 		a.expiration = exp
 	}
 }
 
 // WithExpirySkew overrides the default early-refresh window (DefaultExpirySkew,
 // 30s) applied to the token cache returned by NewApplicationTokenSource. The
-// cached token is refreshed when time.Until(exp) <= d. A zero or negative value
-// disables the skew and falls back to oauth2.ReuseTokenSource behavior
-// (refresh only after exp has passed).
+// cached token is refreshed d before it expires. A zero or negative value falls
+// back to oauth2.ReuseTokenSource and its 10s.
 //
 // Tune this when your application token expiration (see
 // WithApplicationTokenExpiration) is short: the effective validity is
@@ -225,8 +210,8 @@ func NewApplicationTokenSourceFromSigner[T Identifier](id T, signer crypto.Signe
 // resolveIssuer converts a generic App ID / Client ID to its string form
 // and rejects zero values.
 func resolveIssuer[T Identifier](id T) (string, error) {
-	// Identifier is "~int64 | ~string", so both forms are comparable and their
-	// zero value — 0 or "" — is the one input GitHub cannot use.
+	// Every Identifier form is comparable, and its zero value, 0 or "", is the
+	// one input GitHub cannot use.
 	var zero T
 	if id == zero {
 		return "", errors.New("application identifier is required")
@@ -242,7 +227,7 @@ func resolveIssuer[T Identifier](id T) (string, error) {
 		return v.String(), nil
 	}
 
-	// Identifier admits no kind other than int64 here.
+	// Identifier admits only int and int64 kinds here; Int reads both.
 	return strconv.FormatInt(v.Int(), 10), nil
 }
 
@@ -259,12 +244,11 @@ func newApplicationTokenSource(issuer string, signer crypto.Signer, opts ...Appl
 	return ReuseTokenSourceWithSkew(nil, t, t.skew)
 }
 
-// Token generates a GitHub App JWT with required claims: iat, exp, iss, and alg.
+// Token signs a GitHub App JWT with the iat, exp and iss claims, using RS256.
 // The iat claim is set 60 seconds in the past to account for clock drift.
 // Signing is routed through the configured crypto.Signer.
 // Generated JWTs can be used with "Authorization: Bearer" header for GitHub API requests.
 func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
-	// To protect against clock drift, set the issuance time 60 seconds in the past.
 	now := time.Now().Add(-applicationTokenBackdate)
 	expiresAt := now.Add(t.expiration)
 
@@ -295,7 +279,8 @@ func (t *applicationTokenSource) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
-// InstallationTokenSourceOpt is a functional option for InstallationTokenSource.
+// InstallationTokenSourceOpt configures NewInstallationTokenSource, and the
+// subset RevokeInstallationToken and FindInstallationID document.
 type InstallationTokenSourceOpt func(*installationTokenSource)
 
 // WithInstallationTokenOptions sets the options for the GitHub App installation token.
@@ -307,8 +292,8 @@ func WithInstallationTokenOptions(opts *InstallationTokenOptions) InstallationTo
 
 // WithHTTPClient sets the HTTP client used to call the GitHub API. Its transport
 // is wrapped so installation-token requests are authenticated with the GitHub
-// App JWT; any base URL configured via WithBaseURL or WithEnterpriseURL is
-// preserved, so these options may be combined in any order.
+// App JWT; a base URL from WithBaseURL or WithEnterpriseURL is kept whichever
+// comes first.
 //
 // A nil client is a configuration error reported by the first call to Token().
 func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
@@ -347,10 +332,11 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 // host is not already an "api." subdomain. For GitHub Enterprise Cloud or a
 // verbatim URL (such as an httptest server), use WithBaseURL instead.
 //
-// Option order does not matter; it may be combined with WithHTTPClient,
-// WithBaseURL, and WithRetryOnThrottle in any order. If the URL cannot be
-// parsed, the error is reported by the first call to Token() rather than
-// silently falling back to the public GitHub API.
+// It combines with WithHTTPClient and WithRetryOnThrottle in any order. Given
+// with WithBaseURL, the last of the two wins. If the URL cannot be parsed, the
+// error is reported by the first call to Token() rather than silently falling
+// back to the public GitHub API; with several invalid options, the first
+// one's error is reported.
 func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		if _, err := i.client.withEnterpriseURL(baseURL); err != nil {
@@ -368,10 +354,11 @@ func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 //   - GitHub Enterprise Cloud with data residency (https://api.SUBDOMAIN.ghe.com/)
 //   - pointing the client at an httptest server in tests
 //
-// Option order does not matter; it may be combined with WithHTTPClient,
-// WithEnterpriseURL, and WithRetryOnThrottle in any order. If the URL cannot be
+// It combines with WithHTTPClient and WithRetryOnThrottle in any order. Given
+// with WithEnterpriseURL, the last of the two wins. If the URL cannot be
 // parsed, the error is reported by the first call to Token() rather than
-// silently falling back to the public GitHub API.
+// silently falling back to the public GitHub API; with several invalid
+// options, the first one's error is reported.
 func WithBaseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		if _, err := i.client.withBaseURL(baseURL); err != nil {
@@ -380,7 +367,11 @@ func WithBaseURL(baseURL string) InstallationTokenSourceOpt {
 	}
 }
 
-// WithContext sets the context for the GitHub App installation token source.
+// WithContext sets the context every token request runs under, retry wait
+// included; the default is context.Background. Once it is done, every later
+// request fails with its error, so the source stops refreshing once its cached
+// token goes stale; prefer a context that lives as long as the source. It is stored on the source because oauth2.TokenSource.Token takes
+// no context.
 func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		i.ctx = ctx
@@ -536,7 +527,9 @@ func newInstallationTokenSource(id int64, src oauth2.TokenSource, opts []Install
 // from NewApplicationTokenSource already caches with its own skew, and wrapping
 // it again would let the outer cache hold the JWT past that skew.
 func cachedSource(src oauth2.TokenSource) oauth2.TokenSource {
-	if _, ok := src.(*reuseTokenSourceWithSkew); ok {
+	// ReuseTokenSource hands src back only when it already is an oauth2 cache,
+	// as NewApplicationTokenSource returns; that cache keeps its own window.
+	if oauth2.ReuseTokenSource(nil, src) == src {
 		return src
 	}
 	return ReuseTokenSourceWithSkew(nil, src, DefaultExpirySkew)

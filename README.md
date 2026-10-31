@@ -228,11 +228,11 @@ githubauth.NewInstallationTokenSource(installationID, appTokenSource,
 	githubauth.WithBaseURL("https://api.octocorp.ghe.com"))
 ```
 
-Options combine in any order. An unparseable URL (or a nil client passed to `WithHTTPClient`) is reported by the first `Token()` call instead of silently falling back to the public GitHub API.
+`WithHTTPClient` combines with either URL option in any order; given both `WithBaseURL` and `WithEnterpriseURL`, the last wins. An unparseable URL (or a nil client passed to `WithHTTPClient`) is reported by the first `Token()` call instead of silently falling back to the public GitHub API.
 
 ## Proactive token refresh
 
-`oauth2.ReuseTokenSource` refreshes a cached token only *after* it expires, so a request that starts just before expiry can reach GitHub with a dead credential and 401. Both constructors instead wrap their sources in `ReuseTokenSourceWithSkew`, refreshing when `time.Until(exp) <= skew` (default `DefaultExpirySkew`, 30s).
+`oauth2.ReuseTokenSource` refreshes a cached token 10s before it expires, which is not always enough for a request to reach GitHub in time. Both constructors instead wrap their sources in `ReuseTokenSourceWithSkew`, refreshing `skew` before expiry (default `DefaultExpirySkew`, 30s). It is oauth2's own cache with a longer window, so `oauth2.NewClient` uses it as is instead of adding its 10s one on top.
 
 ```go
 appTokenSource, err := githubauth.NewApplicationTokenSource(clientID, privateKey,

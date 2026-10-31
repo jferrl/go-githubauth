@@ -866,6 +866,9 @@ func Test_parseRetryAfter(t *testing.T) {
 	}{
 		{name: "integer seconds", value: "5", want: 5 * time.Second, wantOK: true},
 		{name: "integer seconds with whitespace", value: " 7 ", want: 7 * time.Second, wantOK: true},
+		// Multiplied uncapped, these overflowed to a negative "retry now".
+		{name: "seconds past the cap", value: "9223372036854775807", want: maxRetryAfter, wantOK: true},
+		{name: "negative seconds past the cap", value: "-9223372036854775808", want: -maxRetryAfter, wantOK: true},
 		{name: "zero seconds", value: "0", want: 0, wantOK: true},
 		{name: "negative seconds", value: "-3", want: -3 * time.Second, wantOK: true},
 		{name: "HTTP-date future", value: now.Add(10 * time.Second).Format(http.TimeFormat), want: 10 * time.Second, wantOK: true},

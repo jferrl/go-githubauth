@@ -98,11 +98,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "jwt":
 		err = jwtCmd(args[1:], stdin, stdout, stderr, &out)
 	case "version", "--version", "-version", "-v":
-		_, _ = fmt.Fprintln(stdout, version())
-		return exitOK
+		_, err = fmt.Fprintln(stdout, version())
 	case "help", "--help", "-help", "-h":
-		_, _ = fmt.Fprint(stdout, rootHelp)
-		return exitOK
+		_, err = fmt.Fprint(stdout, rootHelp)
 	default:
 		err = unknownCommand(args[0])
 	}
@@ -353,7 +351,6 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return usagef("--permissions names no permission; omit it for a token with every permission the App has")
 	}
 
-
 	appSrc, err := app.source(stdin)
 	if err != nil {
 		return err
@@ -463,15 +460,58 @@ func parseFlags(fs *flag.FlagSet, args []string, out *output, stdout, stderr io.
 	err := fs.Parse(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
-		_, _ = diag.WriteTo(stdout)
+		if _, werr := diag.WriteTo(stdout); werr != nil {
+			return werr
+		}
 		return err
 	case err != nil:
+		scanOutputFlags(fs, args, out)
 		if !out.json && !out.agent {
 			_, _ = diag.WriteTo(stderr)
 		}
 		return usageError{err: err, reported: true}
 	}
 	return nil
+}
+
+// scanOutputFlags sets --json and --agent from the arguments the flag package
+// never reached, because one before them failed to parse, so the failure is
+// still rendered the way the caller asked. It stops where flag parsing would:
+// at "--" or the first argument that is not a flag.
+func scanOutputFlags(fs *flag.FlagSet, args []string, out *output) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
+			return
+		}
+		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+		f := fs.Lookup(name)
+		if f == nil {
+			continue
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+			// Its value is the next argument, whatever it looks like.
+			if !hasValue {
+				i++
+			}
+			continue
+		}
+		on := true
+		if hasValue {
+			// An explicit --json= is as invalid here as to the flag package.
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				continue
+			}
+			on = b
+		}
+		switch name {
+		case "json":
+			out.json = on
+		case "agent":
+			out.agent = on
+		}
+	}
 }
 
 // badEnvNumber explains a missing numeric flag whose environment fallback was
@@ -561,9 +601,9 @@ func readKey(v string, stdin io.Reader) ([]byte, error) {
 		// the value is named only when it is short enough to be a path.
 		var pe *os.PathError
 		if errors.As(err, &pe) && len(v) > maxKeyPathLen {
-			return nil, usagef("reading private key: --key is neither PEM, %q, nor a file it can open (%v); a base64-encoded key needs decoding first", "-", pe.Err)
+			return nil, usagef("reading private key: --key is neither PEM, %q, nor a file it can open (%w); a base64-encoded key needs decoding first", "-", pe.Err)
 		}
-		return nil, usagef("reading private key: %v", err)
+		return nil, usagef("reading private key: %w", err)
 	}
 	return pem, nil
 }
@@ -704,7 +744,11 @@ func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
 // envInt64 ignores a malformed value here, before the flags are parsed;
 // badEnvNumber reports it where the value would have been used.
 func envInt64(key string) int64 {
-	n, _ := strconv.ParseInt(os.Getenv(key), 10, 64)
+	n, err := strconv.ParseInt(os.Getenv(key), 10, 64)
+	if err != nil {
+		// ParseInt returns the nearest int64 on overflow; that is no ID either.
+		return 0
+	}
 	return n
 }
 
@@ -750,8 +794,8 @@ func version() string {
 	return "(devel) " + revision
 }
 
-// nearest suggests a command for a typo, matching on a shared prefix or a
-// single edit, which covers the realistic slips.
+// nearest suggests a command for a typo, matching on a shared prefix or at most
+// two edits, which covers the realistic slips, transpositions included.
 func nearest(in string) string {
 	for _, cmd := range []string{"token", "jwt", "version", "help"} {
 		if strings.HasPrefix(cmd, in) || strings.HasPrefix(in, cmd) || editDistance(in, cmd) <= 2 {
