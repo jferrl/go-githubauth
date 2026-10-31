@@ -39,6 +39,12 @@ var execEnterpriseEnv = []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN
 // The child's exit status becomes githubauth's, so --exec is transparent to
 // whatever inspects the result.
 func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return runChild(argv, tok, host, inForeground, stdin, stdout, stderr)
+}
+
+// runChild is runWithToken with the foreground check passed in, which a test
+// cannot leave to whatever terminal it happens to run under.
+func runChild(argv []string, tok *oauth2.Token, host string, inFg func(pid int) bool, stdin io.Reader, stdout, stderr io.Writer) error {
 	all := append(slices.Clone(execTokenEnv), execEnterpriseEnv...)
 	keys := execTokenEnv
 	if isEnterpriseHost(host) {
@@ -64,7 +70,6 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 	// its environment. A Ctrl-C at the keyboard reaches the child itself when
 	// the child is in the terminal's foreground job, so then SIGINT is only
 	// held, to keep githubauth alive until the child exits.
-	inFg := foreground
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -118,7 +123,7 @@ const revokeTimeout = 10 * time.Second
 // returned func runs. Held from before the command starts until the token is
 // revoked, a signal in between cannot leave the token valid. revokeTimeout
 // bounds how long they stay held once the command has exited.
-func holdSignals() (release func()) {
+func holdSignals() func() {
 	held := make(chan os.Signal, 1)
 	signal.Notify(held, os.Interrupt, syscall.SIGTERM)
 	return func() { signal.Stop(held) }
@@ -137,7 +142,7 @@ func revoke(err error, tok *oauth2.Token, opts []githubauth.InstallationTokenSou
 	// A 401 means the token is already dead: past its hour, or revoked by the
 	// command itself.
 	var apiErr *githubauth.APIError
-	if revokeErr == nil || errors.As(revokeErr, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized {
+	if revokeErr == nil || (errors.As(revokeErr, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized) {
 		return err
 	}
 
@@ -176,10 +181,6 @@ func ghHost(apiURL string) string {
 	return host
 }
 
-// foreground is inForeground, replaceable by the tests, whose process group a
-// developer's terminal may or may not hold.
-var foreground = inForeground
-
 // isEnterpriseHost mirrors gh's own test for whether a host reads the
 // enterprise variables: anything but github.com and data residency (*.ghe.com).
 func isEnterpriseHost(host string) bool {
@@ -189,20 +190,18 @@ func isEnterpriseHost(host string) bool {
 // childEnviron is githubauth's environment without the App's private key or
 // any token already exported, for every process githubauth starts.
 func childEnviron() []string {
-	return environWithout(os.Environ(), append(append(slices.Clone(execTokenEnv), execEnterpriseEnv...), "GITHUB_APP_PRIVATE_KEY")...)
+	// Windows ignores case in variable names, so github_app_private_key is
+	// the same variable there.
+	return environWithout(os.Environ(), runtime.GOOS == "windows", append(append(slices.Clone(execTokenEnv), execEnterpriseEnv...), "GITHUB_APP_PRIVATE_KEY")...)
 }
 
-// foldEnvNames is whether environment variable names ignore case, as on
-// Windows, where github_app_private_key is the same variable.
-var foldEnvNames = runtime.GOOS == "windows"
-
 // environWithout drops keys from env so the token cannot be shadowed by one
-// the caller already exported.
-func environWithout(env []string, keys ...string) []string {
+// the caller already exported. foldCase matches names ignoring case.
+func environWithout(env []string, foldCase bool, keys ...string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(keys, func(k string) bool { return k == name || foldEnvNames && strings.EqualFold(k, name) }) {
+		if !slices.ContainsFunc(keys, func(k string) bool { return k == name || (foldCase && strings.EqualFold(k, name)) }) {
 			out = append(out, kv)
 		}
 	}

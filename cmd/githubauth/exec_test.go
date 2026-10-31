@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -232,57 +233,65 @@ func TestRunWithToken(t *testing.T) {
 
 	// A supervisor stopping githubauth with SIGINT, with no terminal to have
 	// sent the child its own, would otherwise leave the child running.
-	t.Run("SIGINT is forwarded to the child outside the terminal's foreground", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("no signals on windows")
-		}
-		foreground = func(int) bool { return false }
-		t.Cleanup(func() { foreground = inForeground })
-		t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
-		t.Setenv("GITHUBAUTH_EXEC_SLEEP", "1")
+	// A supervisor stopping githubauth with SIGINT, with no terminal to have
+	// sent the child its own, would otherwise leave the child running. A
+	// SIGTERM, usually sent to githubauth alone, likewise.
+	signals := []struct {
+		name         string
+		sig          syscall.Signal
+		inForeground bool
+	}{
+		{name: "SIGINT is forwarded to the child outside the terminal's foreground", sig: syscall.SIGINT},
+		{name: "SIGTERM is forwarded to the child", sig: syscall.SIGTERM, inForeground: true},
+	}
+	for _, tt := range signals {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("no signals on windows")
+			}
+			t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
+			t.Setenv("GITHUBAUTH_EXEC_SLEEP", "1")
 
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			p, _ := os.FindProcess(os.Getpid())
-			_ = p.Signal(os.Interrupt)
-		}()
+			// The helper prints before it sleeps, so its first output means it
+			// is running and runChild is already holding signals.
+			out := &readyWriter{ready: make(chan struct{})}
+			sent := make(chan struct{})
+			go func() {
+				defer close(sent)
+				select {
+				case <-out.ready:
+				case <-time.After(5 * time.Second):
+					return
+				}
+				p, _ := os.FindProcess(os.Getpid())
+				_ = p.Signal(tt.sig)
+			}()
 
-		var stdout, stderr bytes.Buffer
-		err := runWithToken(helperArgv(), tok, "", strings.NewReader(""), &stdout, &stderr)
+			var stderr bytes.Buffer
+			err := runChild(helperArgv(), tok, "", func(int) bool { return tt.inForeground }, strings.NewReader(""), out, &stderr)
+			<-sent
 
-		var status exitStatus
-		if !errors.As(err, &status) || int(status) != 128+int(syscall.SIGINT) {
-			t.Errorf("runWithToken() error = %v, want exitStatus %d", err, 128+int(syscall.SIGINT))
-		}
-	})
+			var status exitStatus
+			if !errors.As(err, &status) || int(status) != 128+int(tt.sig) {
+				t.Errorf("runChild() error = %v, want exitStatus %d", err, 128+int(tt.sig))
+			}
+		})
+	}
+}
 
-	// A SIGTERM sent to githubauth alone would otherwise leave the child
-	// running with the credential in its environment.
-	t.Run("SIGTERM is forwarded to the child", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("no signals on windows")
-		}
-		t.Setenv("GITHUBAUTH_EXEC_HELPER", "1")
-		t.Setenv("GITHUBAUTH_EXEC_SLEEP", "1")
+// readyWriter closes ready on the first write it receives.
+type readyWriter struct {
+	once  sync.Once
+	ready chan struct{}
+	mu    sync.Mutex
+	buf   bytes.Buffer
+}
 
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			p, _ := os.FindProcess(os.Getpid())
-			_ = p.Signal(syscall.SIGTERM)
-		}()
-
-		start := time.Now()
-		var stdout, stderr bytes.Buffer
-		err := runWithToken(helperArgv(), tok, "", strings.NewReader(""), &stdout, &stderr)
-
-		var status exitStatus
-		if !errors.As(err, &status) || int(status) != 128+int(syscall.SIGTERM) {
-			t.Errorf("runWithToken() error = %v, want exitStatus %d", err, 128+int(syscall.SIGTERM))
-		}
-		if elapsed := time.Since(start); elapsed > 5*time.Second {
-			t.Errorf("elapsed = %v, want the child stopped by the forwarded signal", elapsed)
-		}
-	})
+func (w *readyWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.ready) })
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
 }
 
 func TestGhHost(t *testing.T) {
@@ -324,7 +333,7 @@ func TestEnvironWithout(t *testing.T) {
 	env := []string{"PATH=/bin", "GITHUB_TOKEN=stale", "GH_TOKEN=stale", "GITHUB_TOKEN_EXTRA=kept", "HOME=/home/x"}
 	want := []string{"PATH=/bin", "GITHUB_TOKEN_EXTRA=kept", "HOME=/home/x"}
 
-	got := environWithout(env, "GITHUB_TOKEN", "GH_TOKEN")
+	got := environWithout(env, false, "GITHUB_TOKEN", "GH_TOKEN")
 	if len(got) != len(want) {
 		t.Fatalf("environWithout() = %q, want %q", got, want)
 	}
@@ -338,11 +347,7 @@ func TestEnvironWithout(t *testing.T) {
 // TestEnvironWithoutFoldsWhereTheOSDoes checks the private key is dropped
 // whatever its case on Windows, where the OS reads it case-insensitively.
 func TestEnvironWithoutFoldsWhereTheOSDoes(t *testing.T) {
-	was := foldEnvNames
-	foldEnvNames = true
-	t.Cleanup(func() { foldEnvNames = was })
-
-	got := environWithout([]string{"github_app_private_key=pem", "PATH=/bin"}, "GITHUB_APP_PRIVATE_KEY")
+	got := environWithout([]string{"github_app_private_key=pem", "PATH=/bin"}, true, "GITHUB_APP_PRIVATE_KEY")
 	if len(got) != 1 || got[0] != "PATH=/bin" {
 		t.Errorf("environWithout() = %q, want only PATH", got)
 	}

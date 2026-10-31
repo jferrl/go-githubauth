@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -112,71 +113,66 @@ func statusHandler(code int) func() *httptest.Server {
 }
 
 // Stdout matchers, so one table can assert on a fixed token, a signed JWT
-// whose bytes differ every run, and a JSON envelope.
+// whose bytes differ every run, and a JSON envelope. Each returns what is
+// wrong, for TestRun to report with the invocation that produced it.
 
-func isEmpty(t *testing.T, got string) {
-	t.Helper()
-
+func isEmpty(got string) error {
 	if got != "" {
-		t.Errorf("stdout = %q, want it empty", got)
+		return fmt.Errorf("stdout = %q, want it empty", got)
 	}
+	return nil
 }
 
-func isNotEmpty(t *testing.T, got string) {
-	t.Helper()
-
+func isNotEmpty(got string) error {
 	if got == "" {
-		t.Error("stdout is empty, want output")
+		return errors.New("stdout is empty, want output")
 	}
+	return nil
 }
 
-func isExactly(want string) func(*testing.T, string) {
-	return func(t *testing.T, got string) {
-		t.Helper()
-
+func isExactly(want string) func(string) error {
+	return func(got string) error {
 		if got != want {
-			t.Errorf("stdout = %q, want %q", got, want)
+			return fmt.Errorf("stdout = %q, want %q", got, want)
 		}
+		return nil
 	}
 }
 
-func contains(want string) func(*testing.T, string) {
-	return func(t *testing.T, got string) {
-		t.Helper()
-
+func contains(want string) func(string) error {
+	return func(got string) error {
 		if !strings.Contains(got, want) {
-			t.Errorf("stdout = %q, want it to contain %q", got, want)
+			return fmt.Errorf("stdout = %q, want it to contain %q", got, want)
 		}
+		return nil
 	}
 }
 
-func isJWT(t *testing.T, got string) {
-	t.Helper()
-
+func isJWT(got string) error {
 	if n := len(strings.Split(got, ".")); n != 3 {
-		t.Errorf("stdout has %d JWT segments, want 3", n)
+		return fmt.Errorf("stdout has %d JWT segments, want 3", n)
 	}
+	return nil
 }
 
 // isJSONToken checks the --json envelope: the token, and an expiry that is in
 // the future but no further out than max.
-func isJSONToken(want string, max time.Duration) func(*testing.T, string) {
-	return func(t *testing.T, got string) {
-		t.Helper()
-
+func isJSONToken(want string, max time.Duration) func(string) error {
+	return func(got string) error {
 		var out struct {
 			Token     string    `json:"token"`
 			ExpiresAt time.Time `json:"expires_at"`
 		}
 		if err := json.Unmarshal([]byte(got), &out); err != nil {
-			t.Fatalf("decoding %q: %v", got, err)
+			return fmt.Errorf("decoding stdout %q: %w", got, err)
 		}
 		if want != "" && out.Token != want {
-			t.Errorf("token = %q, want %q", out.Token, want)
+			return fmt.Errorf("token = %q, want %q", out.Token, want)
 		}
 		if d := time.Until(out.ExpiresAt); d <= 0 || d > max {
-			t.Errorf("expires in %v, want a positive duration under %v", d, max)
+			return fmt.Errorf("expires in %v, want a positive duration under %v", d, max)
 		}
+		return nil
 	}
 }
 
@@ -192,7 +188,7 @@ func TestRun(t *testing.T) {
 		env         map[string]string
 		setupServer func() *httptest.Server
 		wantCode    int
-		wantStdout  func(*testing.T, string)
+		wantStdout  func(string) error
 		wantStderr  string
 		quietStderr bool
 	}{
@@ -620,6 +616,14 @@ func TestRun(t *testing.T) {
 			quietStderr: true,
 		},
 		{
+			name: "a --json value that is not a bool is not on",
+			args: func(string) []string {
+				return []string{"token", "--json=maybe", "--bogus"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+		},
+		{
 			name: "an explicit empty --json= is not on",
 			args: func(string) []string {
 				return []string{"token", "--json=", "--bogus"}
@@ -862,12 +866,15 @@ func TestRun(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 
-			got := run(tt.args(serverURL), strings.NewReader(tt.stdin), &stdout, &stderr)
+			args := tt.args(serverURL)
+			got := run(args, strings.NewReader(tt.stdin), &stdout, &stderr)
 			if got != tt.wantCode {
-				t.Errorf("run() = %d, want %d (stderr: %s)", got, tt.wantCode, stderr.String())
+				t.Errorf("run(%q) = %d, want %d (stderr: %s)", args, got, tt.wantCode, stderr.String())
 			}
 			if tt.wantStdout != nil {
-				tt.wantStdout(t, strings.TrimSpace(stdout.String()))
+				if err := tt.wantStdout(strings.TrimSpace(stdout.String())); err != nil {
+					t.Errorf("run(%q): %v", args, err)
+				}
 			}
 			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
@@ -1082,10 +1089,10 @@ func TestTokenRequests(t *testing.T) {
 			if tt.wantMint != "" && mint != tt.wantMint {
 				t.Errorf("minted at %s, want %s", mint, tt.wantMint)
 			}
-			if !strings.Contains(stdout.String(), tt.wantStdout) {
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
 			}
-			if tt.wantBody != "" && body != tt.wantBody {
+			if tt.wantBody != "" && !sameJSON(body, tt.wantBody) {
 				t.Errorf("request body = %s, want %s", body, tt.wantBody)
 			}
 			if revoked := revokedWith != ""; revoked != tt.wantRevoke {
@@ -1234,7 +1241,7 @@ func TestReadKey(t *testing.T) {
 	}
 }
 
-func TestSplitRepos(t *testing.T) {
+func TestSplitList(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1253,13 +1260,13 @@ func TestSplitRepos(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := splitRepos(tt.in)
+			got := splitList(tt.in)
 			if len(got) != len(tt.want) {
-				t.Fatalf("splitRepos(%q) = %v, want %v", tt.in, got, tt.want)
+				t.Fatalf("splitList(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 			for i := range got {
 				if got[i] != tt.want[i] {
-					t.Errorf("splitRepos(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
+					t.Errorf("splitList(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
 				}
 			}
 		})
@@ -1347,7 +1354,7 @@ type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errors.New("pipe closed") }
 
-func TestWrite(t *testing.T) {
+func TestWriteToken(t *testing.T) {
 	t.Parallel()
 
 	tok := &oauth2.Token{AccessToken: "ghs_x", Expiry: time.Now().Add(time.Hour)}
@@ -1375,18 +1382,18 @@ func TestWrite(t *testing.T) {
 				w = &buf
 			}
 
-			err := write(w, tok, tt.asJSON)
+			err := writeToken(w, tok, tt.asJSON)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatal("write() = nil, want the writer's error")
+					t.Fatal("writeToken() = nil, want the writer's error")
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("write() error = %v", err)
+				t.Fatalf("writeToken() error = %v", err)
 			}
 			if !strings.Contains(buf.String(), tt.want) {
-				t.Errorf("write() wrote %q, want it to contain %q", buf.String(), tt.want)
+				t.Errorf("writeToken() wrote %q, want it to contain %q", buf.String(), tt.want)
 			}
 		})
 	}
@@ -1524,7 +1531,12 @@ func TestOriginRepoKeepsTheKeyFromGit(t *testing.T) {
 	if owner, repo, ok := originRepo(""); !ok || owner != "acme" || repo != "api" {
 		t.Fatalf("originRepo() = %q, %q, %v, want acme, api, true", owner, repo, ok)
 	}
-	if got, _ := os.ReadFile(seen); len(got) != 0 {
+	// The fake git always writes the file, so a missing one means it never ran.
+	got, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatalf("reading what git saw: %v", err)
+	}
+	if len(got) != 0 {
 		t.Errorf("git saw $GITHUB_APP_PRIVATE_KEY = %q, want it empty", got)
 	}
 }
@@ -1602,4 +1614,11 @@ func TestErrorsKeepTheirCause(t *testing.T) {
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Errorf("runWithToken(missing command) error = %v, want it to wrap exec.ErrNotFound", err)
 	}
+}
+
+// sameJSON reports whether a and b are the same JSON value: key order and
+// spacing are not what a request body promises.
+func sameJSON(a, b string) bool {
+	var av, bv any
+	return json.Unmarshal([]byte(a), &av) == nil && json.Unmarshal([]byte(b), &bv) == nil && reflect.DeepEqual(av, bv)
 }

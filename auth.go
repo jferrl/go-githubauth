@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 )
 
@@ -339,7 +339,7 @@ func WithHTTPClient(client *http.Client) InstallationTokenSourceOpt {
 // one's error is reported.
 func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
-		if _, err := i.client.withEnterpriseURL(baseURL); err != nil {
+		if err := i.client.withEnterpriseURL(baseURL); err != nil {
 			i.setConfigErr(err)
 		}
 	}
@@ -361,7 +361,7 @@ func WithEnterpriseURL(baseURL string) InstallationTokenSourceOpt {
 // options, the first one's error is reported.
 func WithBaseURL(baseURL string) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
-		if _, err := i.client.withBaseURL(baseURL); err != nil {
+		if err := i.client.withBaseURL(baseURL); err != nil {
 			i.setConfigErr(err)
 		}
 	}
@@ -370,8 +370,8 @@ func WithBaseURL(baseURL string) InstallationTokenSourceOpt {
 // WithContext sets the context every token request runs under, retry wait
 // included; the default is context.Background. Once it is done, every later
 // request fails with its error, so the source stops refreshing once its cached
-// token goes stale; prefer a context that lives as long as the source. It is stored on the source because oauth2.TokenSource.Token takes
-// no context.
+// token goes stale; prefer a context that lives as long as the source. It is
+// stored on the source because oauth2.TokenSource.Token takes no context.
 func WithContext(ctx context.Context) InstallationTokenSourceOpt {
 	return func(i *installationTokenSource) {
 		i.ctx = ctx
@@ -469,8 +469,9 @@ func NewInstallationTokenSource(id int64, src oauth2.TokenSource, opts ...Instal
 // RevokeInstallationToken revokes an installation access token before its hour
 // is up, so a copy that leaked stops working. A source from
 // NewInstallationTokenSource that handed the token out does not know, and keeps
-// returning it from its cache until it expires; build a new source instead. WithBaseURL, WithEnterpriseURL and
-// WithHTTPClient apply as they do to NewInstallationTokenSource. The other
+// returning it from its cache until it expires; build a new source instead.
+// WithBaseURL, WithEnterpriseURL and WithHTTPClient apply as they do to
+// NewInstallationTokenSource. The other
 // options are ignored.
 //
 // See https://docs.github.com/en/rest/apps/installations?apiVersion=2022-11-28#revoke-an-installation-access-token
@@ -535,7 +536,8 @@ func cachedSource(src oauth2.TokenSource) oauth2.TokenSource {
 	return ReuseTokenSourceWithSkew(nil, src, DefaultExpirySkew)
 }
 
-// Token generates a new GitHub App installation token for authenticating as a GitHub App installation.
+// Token mints an installation access token, carrying what GitHub granted it in
+// its Extra fields.
 func (t *installationTokenSource) Token() (*oauth2.Token, error) {
 	if t.configErr != nil {
 		return nil, t.configErr
@@ -598,7 +600,7 @@ func NewPersonalAccessTokenSource(token string) oauth2.TokenSource {
 // remain valid until manually revoked or expired by GitHub.
 func (t *personalAccessTokenSource) Token() (*oauth2.Token, error) {
 	if t.token == "" {
-		return nil, errors.New("token not provided")
+		return nil, errors.New("personal access token is required")
 	}
 
 	return &oauth2.Token{

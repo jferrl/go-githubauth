@@ -188,8 +188,9 @@ func (a *appFlags) checkExec(argv []string) error {
 // checkGHHost refuses an exported GH_HOST that names another instance than
 // the one an installation token is for, before anything is minted: gh would
 // send the token there. The JWT is not checked: it is signed locally, and only
-// the caller knows which instance its App lives on. A caller whose proxy really serves it sets GH_HOST inside
-// the command instead, where nothing else in the environment can choose it.
+// the caller knows which instance its App lives on. A caller whose proxy
+// really serves it sets GH_HOST inside the command instead, where nothing else
+// in the environment can choose it.
 func (a *appFlags) checkGHHost() error {
 	want := cmp.Or(a.host, "github.com")
 	// Compared exactly: gh treats github.com:443 as another host than github.com.
@@ -205,7 +206,7 @@ func (a *appFlags) emit(tok *oauth2.Token, argv []string, stdin io.Reader, stdou
 	if a.exec {
 		return runWithToken(argv, tok, a.host, stdin, stdout, stderr)
 	}
-	if err := write(stdout, tok, a.out.json); err != nil {
+	if err := writeToken(stdout, tok, a.out.json); err != nil {
 		return err
 	}
 	if a.out.agent {
@@ -268,130 +269,173 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
   # GitHub Enterprise Server. Under --exec, $GH_HOST points gh at it.
   githubauth token --installation 12345 --enterprise-url https://github.example.com`)
 
-	var app appFlags
-	app.bind(fs, out)
-
-	installation := fs.Int64("installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
-	repos := fs.String("repos", "", "comma-separated repository names to scope the token to; owner/repo also finds the installation, like --owner")
-	owner := fs.String("owner", "", "user or organization the App is installed on, to look up the installation instead of passing --installation")
-	permissions := fs.String("permissions", "", "comma-separated name:level pairs to scope the token to, e.g. contents:read,pull_requests:write")
-	keep := fs.Bool("keep", false, "under --exec, leave the token valid when the command exits instead of revoking it")
-	baseURL := fs.String("base-url", "", "API base URL, used verbatim (Enterprise Cloud with data residency)")
-	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise Server URL, normalized the way GHES expects")
-
+	var f tokenFlags
+	f.bind(fs, out)
 	if err := parseFlags(fs, args, out, stdout, stderr); err != nil {
 		return err
 	}
-	if err := app.checkExec(fs.Args()); err != nil {
-		return err
-	}
-	if *keep && !app.exec {
-		return usagef("--keep applies only under --exec, which revokes the token when the command exits")
-	}
-	// An empty scope is no scope: GitHub would mint a token for every
-	// repository, the opposite of what passing --repos asked for.
-	names, repoOwner, err := splitOwner(splitRepos(*repos))
+	req, err := f.resolve()
 	if err != nil {
 		return err
 	}
-	if isSet(fs, "repos") && len(names) == 0 {
-		return usagef("--repos names no repository; omit it for a token covering the whole installation")
+	appSrc, err := f.source(stdin)
+	if err != nil {
+		return err
 	}
+
+	urlOpts := f.urlOptions()
+	tok, err := mint(appSrc, req, urlOpts)
+	if err != nil {
+		return err
+	}
+	if f.exec && !f.keep {
+		defer holdSignals()()
+	}
+	err = f.emit(tok, fs.Args(), stdin, stdout, stderr)
+	// Even a command that failed to start leaves a minted token behind.
+	if f.exec && !f.keep {
+		err = revoke(err, tok, urlOpts, stderr)
+	}
+	return err
+}
+
+// tokenFlags are the token command's flags, beside the ones every command has.
+type tokenFlags struct {
+	appFlags
+	installation  int64
+	repos         string
+	owner         string
+	permissions   string
+	keep          bool
+	baseURL       string
+	enterpriseURL string
+}
+
+func (f *tokenFlags) bind(fs *flag.FlagSet, out *output) {
+	f.appFlags.bind(fs, out)
+	fs.Int64Var(&f.installation, "installation", envInt64("GITHUB_APP_INSTALLATION_ID"), "installation ID to mint the token for ($GITHUB_APP_INSTALLATION_ID)")
+	fs.StringVar(&f.repos, "repos", "", "comma-separated repository names to scope the token to; owner/repo also finds the installation, like --owner")
+	fs.StringVar(&f.owner, "owner", "", "user or organization the App is installed on, to look up the installation instead of passing --installation")
+	fs.StringVar(&f.permissions, "permissions", "", "comma-separated name:level pairs to scope the token to, e.g. contents:read,pull_requests:write")
+	fs.BoolVar(&f.keep, "keep", false, "under --exec, leave the token valid when the command exits instead of revoking it")
+	fs.StringVar(&f.baseURL, "base-url", "", "API base URL, used verbatim (Enterprise Cloud with data residency)")
+	fs.StringVar(&f.enterpriseURL, "enterprise-url", "", "GitHub Enterprise Server URL, normalized the way GHES expects")
+}
+
+// tokenRequest is what the token flags resolve to: the installation, or the
+// owner to look it up by, and how far to narrow the token.
+type tokenRequest struct {
+	installation int64
+	owner        string
+	repos        []string
+	permissions  *githubauth.InstallationPermissions
+}
+
+// resolve checks the flags against each other and works out the request,
+// before any key is read or request made. It also sets f.host.
+func (f *tokenFlags) resolve() (tokenRequest, error) {
+	if err := f.checkExec(f.fs.Args()); err != nil {
+		return tokenRequest{}, err
+	}
+	if f.keep && !f.exec {
+		return tokenRequest{}, usagef("--keep applies only under --exec, which revokes the token when the command exits")
+	}
+	// An empty scope is no scope: GitHub would mint a token for every
+	// repository, the opposite of what passing --repos asked for.
+	names, repoOwner, err := splitOwner(splitList(f.repos))
+	if err != nil {
+		return tokenRequest{}, err
+	}
+	if isSet(f.fs, "repos") && len(names) == 0 {
+		return tokenRequest{}, usagef("--repos names no repository; omit it for a token covering the whole installation")
+	}
+	owner := f.owner
 	// An owner/repo name finds the installation the way --owner does.
 	if repoOwner != "" {
 		switch {
-		case isSet(fs, "installation"):
-			return usagef("--repos names the owner %s, which finds the installation: drop --installation, or the %s/ prefix", repoOwner, repoOwner)
-		case *owner != "" && !strings.EqualFold(*owner, repoOwner):
-			return usagef("--repos names repositories of %s, but --owner is %s", repoOwner, *owner)
+		case isSet(f.fs, "installation"):
+			return tokenRequest{}, usagef("--repos names the owner %s, which finds the installation: drop --installation, or the %s/ prefix", repoOwner, repoOwner)
+		case owner != "" && !strings.EqualFold(owner, repoOwner):
+			return tokenRequest{}, usagef("--repos names repositories of %s, but --owner is %s", repoOwner, owner)
 		}
-		*owner = repoOwner
+		owner = repoOwner
 	}
-	if *baseURL != "" && *enterpriseURL != "" {
-		return usagef("set --base-url or --enterprise-url, not both")
+	if f.baseURL != "" && f.enterpriseURL != "" {
+		return tokenRequest{}, usagef("set --base-url or --enterprise-url, not both")
 	}
-	if err := checkURL("--base-url", *baseURL); err != nil {
-		return err
+	if err := checkURL("--base-url", f.baseURL); err != nil {
+		return tokenRequest{}, err
 	}
-	if err := checkURL("--enterprise-url", *enterpriseURL); err != nil {
-		return err
+	if err := checkURL("--enterprise-url", f.enterpriseURL); err != nil {
+		return tokenRequest{}, err
 	}
-	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
-	if err := app.checkGHHost(); err != nil {
-		return err
+	f.host = ghHost(cmp.Or(f.baseURL, f.enterpriseURL))
+	if err := f.checkGHHost(); err != nil {
+		return tokenRequest{}, err
 	}
 	// Nothing names the installation, so the clone the command runs in does,
 	// the way actions/create-github-app-token defaults to the current
 	// repository. The token covers that repository alone.
 	// An --owner given empty, as from an unset script variable, is not
 	// nothing: falling back would mint for a repository the script never named.
-	if !isSet(fs, "owner") && !isSet(fs, "installation") && !isSet(fs, "repos") && os.Getenv("GITHUB_APP_INSTALLATION_ID") == "" {
-		if o, r, ok := originRepo(app.host); ok {
-			*owner, names = o, []string{r}
+	if !isSet(f.fs, "owner") && !isSet(f.fs, "installation") && !isSet(f.fs, "repos") && os.Getenv("GITHUB_APP_INSTALLATION_ID") == "" {
+		if o, r, ok := originRepo(f.host); ok {
+			owner, names = o, []string{r}
 		}
 	}
 	switch {
-	case *owner != "" && isSet(fs, "installation"):
-		return usagef("set --installation or --owner, not both")
-	case strings.Contains(*owner, "/"):
-		return usagef("--owner %q is a repository: pass its account as --owner and the repository as --repos", *owner)
-	case *owner == "." || *owner == "..":
-		return usagef("--owner %q is not an account: pass a user or organization login", *owner)
-	case *owner == "" && *installation <= 0:
-		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
-			return err
+	case owner != "" && isSet(f.fs, "installation"):
+		return tokenRequest{}, usagef("set --installation or --owner, not both")
+	case strings.Contains(owner, "/"):
+		return tokenRequest{}, usagef("--owner %q is a repository: pass its account as --owner and the repository as --repos", owner)
+	case owner == "." || owner == "..":
+		return tokenRequest{}, usagef("--owner %q is not an account: pass a user or organization login", owner)
+	case owner == "" && f.installation <= 0:
+		if err := badEnvNumber(f.fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
+			return tokenRequest{}, err
 		}
-		return usagef("missing installation ID: set --installation, --owner to look it up, or run inside a clone of a repository the App is installed on")
+		return tokenRequest{}, usagef("missing installation ID: set --installation, --owner to look it up, or run inside a clone of a repository the App is installed on")
 	}
-	perms, err := parsePermissions(*permissions)
+	perms, err := parsePermissions(f.permissions)
 	if err != nil {
-		return err
+		return tokenRequest{}, err
 	}
-	if isSet(fs, "permissions") && perms == nil {
-		return usagef("--permissions names no permission; omit it for a token with every permission the App has")
+	if isSet(f.fs, "permissions") && perms == nil {
+		return tokenRequest{}, usagef("--permissions names no permission; omit it for a token with every permission the App has")
 	}
+	return tokenRequest{installation: f.installation, owner: owner, repos: names, permissions: perms}, nil
+}
 
-	appSrc, err := app.source(stdin)
-	if err != nil {
-		return err
-	}
-
-	var urlOpts []githubauth.InstallationTokenSourceOpt
+// urlOptions turns --base-url or --enterprise-url, at most one of which is
+// set, into the options every request to that instance needs.
+func (f *tokenFlags) urlOptions() []githubauth.InstallationTokenSourceOpt {
 	switch {
-	case *baseURL != "":
-		urlOpts = append(urlOpts, githubauth.WithBaseURL(*baseURL))
-	case *enterpriseURL != "":
-		urlOpts = append(urlOpts, githubauth.WithEnterpriseURL(*enterpriseURL))
+	case f.baseURL != "":
+		return []githubauth.InstallationTokenSourceOpt{githubauth.WithBaseURL(f.baseURL)}
+	case f.enterpriseURL != "":
+		return []githubauth.InstallationTokenSourceOpt{githubauth.WithEnterpriseURL(f.enterpriseURL)}
 	}
+	return nil
+}
 
-	id := *installation
-	if *owner != "" {
-		if id, err = githubauth.FindInstallationID(context.Background(), appSrc, *owner, urlOpts...); err != nil {
-			return err
+// mint looks the installation up when only its owner is known, then mints a
+// token scoped as req asks.
+func mint(appSrc oauth2.TokenSource, req tokenRequest, urlOpts []githubauth.InstallationTokenSourceOpt) (*oauth2.Token, error) {
+	id := req.installation
+	if req.owner != "" {
+		var err error
+		if id, err = githubauth.FindInstallationID(context.Background(), appSrc, req.owner, urlOpts...); err != nil {
+			return nil, err
 		}
 	}
-
 	opts := slices.Clone(urlOpts)
-	if len(names) > 0 || perms != nil {
+	if len(req.repos) > 0 || req.permissions != nil {
 		opts = append(opts, githubauth.WithInstallationTokenOptions(&githubauth.InstallationTokenOptions{
-			Repositories: names,
-			Permissions:  perms,
+			Repositories: req.repos,
+			Permissions:  req.permissions,
 		}))
 	}
-
-	tok, err := githubauth.NewInstallationTokenSource(id, appSrc, opts...).Token()
-	if err != nil {
-		return err
-	}
-	if app.exec && !*keep {
-		defer holdSignals()()
-	}
-	err = app.emit(tok, fs.Args(), stdin, stdout, stderr)
-	// Even a command that failed to start leaves a minted token behind.
-	if app.exec && !*keep {
-		err = revoke(err, tok, urlOpts, stderr)
-	}
-	return err
+	return githubauth.NewInstallationTokenSource(id, appSrc, opts...).Token()
 }
 
 func jwtCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *output) error {
@@ -608,7 +652,7 @@ func readKey(v string, stdin io.Reader) ([]byte, error) {
 	return pem, nil
 }
 
-func write(w io.Writer, tok *oauth2.Token, asJSON bool) error {
+func writeToken(w io.Writer, tok *oauth2.Token, asJSON bool) error {
 	if !asJSON {
 		_, err := fmt.Fprintln(w, tok.AccessToken)
 		return err
@@ -625,7 +669,8 @@ func write(w io.Writer, tok *oauth2.Token, asJSON bool) error {
 	}{tok.AccessToken, tok.Expiry, perms, repos})
 }
 
-func splitRepos(v string) []string {
+// splitList splits a comma-separated flag value, dropping empty entries.
+func splitList(v string) []string {
 	var out []string
 	for name := range strings.SplitSeq(v, ",") {
 		if name = strings.TrimSpace(name); name != "" {
@@ -697,8 +742,11 @@ func parseRemote(remote string) (host, owner, repo string, ok bool) {
 		host, path = u.Hostname(), u.Path
 		// An http(s) remote is served by the instance itself, so it carries its
 		// port, default included; see originRepo.
-		if u.Scheme == "http" || u.Scheme == "https" {
-			host = net.JoinHostPort(host, cmp.Or(u.Port(), map[string]string{"http": "80", "https": "443"}[u.Scheme]))
+		switch u.Scheme {
+		case "http":
+			host = net.JoinHostPort(host, cmp.Or(u.Port(), "80"))
+		case "https":
+			host = net.JoinHostPort(host, cmp.Or(u.Port(), "443"))
 		}
 	} else if userHost, p, found := strings.Cut(remote, ":"); found && !strings.Contains(userHost, "/") {
 		_, host, _ = strings.Cut(userHost, "@")
@@ -725,7 +773,7 @@ func parseRemote(remote string) (host, owner, repo string, ok bool) {
 // does not know with a 422, even beside valid ones, rather than ignoring it and
 // minting a token with every permission.
 func parsePermissions(v string) (*githubauth.InstallationPermissions, error) {
-	pairs := splitRepos(v)
+	pairs := splitList(v)
 	if len(pairs) == 0 {
 		return nil, nil
 	}
