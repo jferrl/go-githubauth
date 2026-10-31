@@ -33,14 +33,14 @@ jobs:
       # A missing or empty tap token skips the cask instead of failing the
       # release, which is the right trade but is otherwise invisible. Say so in
       # the log, because a secret cannot be read back to check it.
-      - name: Report whether the Homebrew cask will publish
+      - name: Report whether the Homebrew cask and gh extension will publish
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
-            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. Archives and checksums will publish; the Homebrew cask will be skipped."
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. Archives and checksums will publish; the Homebrew cask and the gh extension will be skipped."
           else
-            echo "HOMEBREW_TAP_GITHUB_TOKEN is present. The cask will be pushed to jferrl/homebrew-tap."
+            echo "HOMEBREW_TAP_GITHUB_TOKEN is present. The cask will be pushed to jferrl/homebrew-tap and the binaries to jferrl/gh-githubauth."
           fi
 
       - uses: goreleaser/goreleaser-action@v7
@@ -53,3 +53,94 @@ jobs:
           # job's GITHUB_TOKEN cannot reach. Without this secret the release
           # still publishes; only the cask is skipped.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  gh-extension:
+    # gh installs a binary extension from the latest release of a gh-* repo,
+    # picking the asset whose name ends in os-arch (.exe on Windows), and takes
+    # bare binaries, not archives. This job repackages the release goreleaser
+    # just published. Being its own job, a failure here leaves that release
+    # alone, and "Re-run failed jobs" retries only this: a re-run of goreleaser
+    # would fail on the assets it already uploaded.
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    # One at a time: two tags pushed together would otherwise both read the
+    # same latest and race to replace it.
+    concurrency:
+      group: gh-extension
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Publish the gh extension
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: jferrl/gh-githubauth
+          # Downloads the public release just made.
+          GH_TOKEN: ${{ github.token }}
+          # The tap token, extended to jferrl/gh-githubauth: the job's own
+          # token cannot write to another repository.
+          PUBLISH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$PUBLISH_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. The gh extension is not published."
+            exit 0
+          fi
+
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'githubauth_*' -p checksums.txt -D dl
+          (cd dl && sha256sum -c checksums.txt)
+
+          # githubauth_<version>_<os>_<arch>.tar.gz, or .zip on Windows.
+          mkdir ext
+          for archive in dl/githubauth_*; do
+            name=$(basename "$archive")
+            name=${name%.tar.gz}
+            name=${name%.zip}
+            arch=${name##*_}
+            rest=${name%_*}
+            os=${rest##*_}
+            if [ "$os" = windows ]; then
+              unzip -p "$archive" githubauth.exe > "ext/gh-githubauth-$os-$arch.exe"
+            else
+              tar -xzOf "$archive" githubauth > "ext/gh-githubauth-$os-$arch"
+            fi
+          done
+          ls -l ext
+          if [ "$(ls ext | wc -l)" -ne 6 ]; then
+            echo "::error::expected 6 binaries for the gh extension, found $(ls ext | wc -l). Nothing was published."
+            exit 1
+          fi
+
+          export GH_TOKEN="$PUBLISH_TOKEN"
+          # gh installs from the latest release, so it is built as a draft and
+          # published only once every binary is on it. A published one is never
+          # touched again; a draft left by a failed run is picked up.
+          if draft=$(gh release view "$TAG" -R "$REPO" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$draft" = false ]; then
+              echo "$REPO already has $TAG published."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" -R "$REPO" --draft --title "$TAG" \
+              --notes "githubauth $TAG for gh. See https://github.com/jferrl/go-githubauth/releases/tag/$TAG."
+          fi
+          gh release upload "$TAG" ext/* -R "$REPO" --clobber
+
+          # A pre-release, or a tag older than the current latest, must not
+          # become what gh install and gh upgrade fetch.
+          prerelease=false
+          latest=true
+          case "$TAG" in *-*) prerelease=true latest=false ;; esac
+          # Only a 404 means there is no latest yet. Any other failure stops
+          # here, rather than letting an older tag take latest by default.
+          if ! current=$(gh api "repos/$REPO/releases/latest" -q .tag_name 2>latest.err); then
+            if ! grep -q 'HTTP 404' latest.err; then
+              cat latest.err
+              exit 1
+            fi
+            current=""
+          fi
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$TAG" | sort -V | tail -n 1)" != "$TAG" ]; then
+            latest=false
+          fi
+          gh release edit "$TAG" -R "$REPO" --draft=false --prerelease="$prerelease" --latest="$latest"

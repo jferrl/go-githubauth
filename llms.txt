@@ -59,7 +59,7 @@ httpClient := oauth2.NewClient(context.Background(), installationSource)
 
 Command line (`githubauth`, from `cmd/githubauth`):
 
-The same credentials without writing Go. Install with `go install github.com/jferrl/go-githubauth/cmd/githubauth@latest`, `brew install jferrl/tap/githubauth`, or a release binary.
+The same credentials without writing Go. Install with `go install github.com/jferrl/go-githubauth/cmd/githubauth@latest`, `brew install jferrl/tap/githubauth`, `gh extension install jferrl/gh-githubauth` (from v1.12.0, run as `gh githubauth`), or a release binary.
 
 - `githubauth token [flags]` — print an installation access token. Flags: `--installation` (or `--owner` to look it up), `--repos`, `--permissions` (e.g. `contents:read,pull_requests:write`), `--keep`, `--base-url`, `--enterprise-url`.
 - `githubauth jwt [flags]` — print the App JWT, for the endpoints that take one. Flags: `--expiry`.
