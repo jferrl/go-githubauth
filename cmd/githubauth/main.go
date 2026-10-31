@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -237,6 +239,9 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 	fs := newFlagSet("token", "Print an installation access token.", `  # Find the installation from the account it is on.
   githubauth token --owner acme
 
+  # Inside a clone, with no installation named: a token for that repository alone.
+  githubauth token --exec -- gh pr merge 7
+
   # Scope the token to two repositories, with read access to their contents.
   githubauth token --installation 12345 --repos api,web --permissions contents:read
 
@@ -289,6 +294,26 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		}
 		*owner = repoOwner
 	}
+	if *baseURL != "" && *enterpriseURL != "" {
+		return usagef("set --base-url or --enterprise-url, not both")
+	}
+	if err := checkURL("--base-url", *baseURL); err != nil {
+		return err
+	}
+	if err := checkURL("--enterprise-url", *enterpriseURL); err != nil {
+		return err
+	}
+	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
+	// Nothing names the installation, so the clone the command runs in does,
+	// the way actions/create-github-app-token defaults to the current
+	// repository. The token covers that repository alone.
+	// An --owner given empty, as from an unset script variable, is not
+	// nothing: falling back would mint for a repository the script never named.
+	if !isSet(fs, "owner") && !isSet(fs, "installation") && !isSet(fs, "repos") && os.Getenv("GITHUB_APP_INSTALLATION_ID") == "" {
+		if o, r, ok := originRepo(app.host); ok {
+			*owner, names = o, []string{r}
+		}
+	}
 	switch {
 	case *owner != "" && isSet(fs, "installation"):
 		return usagef("set --installation or --owner, not both")
@@ -300,16 +325,7 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		if err := badEnvNumber(fs, "installation", "GITHUB_APP_INSTALLATION_ID"); err != nil {
 			return err
 		}
-		return usagef("missing installation ID: set --installation, or --owner to look it up")
-	}
-	if *baseURL != "" && *enterpriseURL != "" {
-		return usagef("set --base-url or --enterprise-url, not both")
-	}
-	if err := checkURL("--base-url", *baseURL); err != nil {
-		return err
-	}
-	if err := checkURL("--enterprise-url", *enterpriseURL); err != nil {
-		return err
+		return usagef("missing installation ID: set --installation, --owner to look it up, or run inside a clone of a repository the App is installed on")
 	}
 	perms, err := parsePermissions(*permissions)
 	if err != nil {
@@ -319,7 +335,6 @@ func tokenCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, out *out
 		return usagef("--permissions names no permission; omit it for a token with every permission the App has")
 	}
 
-	app.host = ghHost(*baseURL + *enterpriseURL) // at most one is set
 
 	appSrc, err := app.source(stdin)
 	if err != nil {
@@ -573,6 +588,46 @@ func splitOwner(names []string) ([]string, string, error) {
 		owner, out[i] = o, repo
 	}
 	return out, owner, nil
+}
+
+// originRepo names the repository the working directory is a clone of, from
+// its origin remote, when that remote is on host, as gh names it: empty for
+// github.com. A clone of another host says nothing about this one.
+func originRepo(host string) (owner, repo string, ok bool) {
+	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", "", false
+	}
+	remoteHost, owner, repo, ok := parseRemote(strings.TrimSpace(string(out)))
+	if !ok || !strings.EqualFold(remoteHost, cmp.Or(host, "github.com")) {
+		return "", "", false
+	}
+	return owner, repo, true
+}
+
+// parseRemote splits a GitHub remote, in its https, ssh:// or scp-like
+// git@host:owner/repo form, into its host, owner and repository.
+func parseRemote(remote string) (host, owner, repo string, ok bool) {
+	var path string
+	if u, err := url.Parse(remote); err == nil && u.Scheme != "" && u.Host != "" {
+		host, path = u.Hostname(), u.Path
+	} else if userHost, p, found := strings.Cut(remote, ":"); found && !strings.Contains(userHost, "/") {
+		_, host, _ = strings.Cut(userHost, "@")
+		host = cmp.Or(host, userHost)
+		path = p
+	} else {
+		return "", "", "", false
+	}
+
+	owner, repo, found := strings.Cut(strings.TrimSuffix(strings.Trim(path, "/"), ".git"), "/")
+	if !found || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", "", "", false
+	}
+	// GitHub's SSH over port 443.
+	if strings.EqualFold(host, "ssh.github.com") {
+		host = "github.com"
+	}
+	return host, owner, repo, true
 }
 
 // parsePermissions reads --permissions into GitHub's permission object, or nil
