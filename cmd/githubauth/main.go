@@ -409,13 +409,14 @@ func (f *tokenFlags) resolve() (tokenRequest, error) {
 // urlOptions turns --base-url or --enterprise-url, at most one of which is
 // set, into the options every request to that instance needs.
 func (f *tokenFlags) urlOptions() []githubauth.InstallationTokenSourceOpt {
+	var opts []githubauth.InstallationTokenSourceOpt
 	switch {
 	case f.baseURL != "":
-		return []githubauth.InstallationTokenSourceOpt{githubauth.WithBaseURL(f.baseURL)}
+		opts = append(opts, githubauth.WithBaseURL(f.baseURL))
 	case f.enterpriseURL != "":
-		return []githubauth.InstallationTokenSourceOpt{githubauth.WithEnterpriseURL(f.enterpriseURL)}
+		opts = append(opts, githubauth.WithEnterpriseURL(f.enterpriseURL))
 	}
-	return nil
+	return opts
 }
 
 // mint looks the installation up when only its owner is known, then mints a
