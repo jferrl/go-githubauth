@@ -22,9 +22,12 @@ import (
 
 // Header names GitHub sets on every webhook delivery.
 const (
+	// SignatureHeader carries the HMAC-SHA256 of the body, as "sha256=<hex>".
 	SignatureHeader = "X-Hub-Signature-256"
-	EventHeader     = "X-GitHub-Event"
-	DeliveryHeader  = "X-GitHub-Delivery"
+	// EventHeader names the event, such as "push" or "pull_request".
+	EventHeader = "X-GitHub-Event"
+	// DeliveryHeader carries the delivery's unique ID.
+	DeliveryHeader = "X-GitHub-Delivery"
 )
 
 // DefaultMaxPayloadSize matches GitHub's documented 25 MiB delivery cap.
@@ -34,13 +37,18 @@ const signaturePrefix = "sha256="
 
 // Sentinel errors returned by Verify. Callers can branch with errors.Is.
 var (
-	ErrMissingSecret          = errors.New("webhook: secret must not be empty")
-	ErrMissingSignature       = errors.New("webhook: missing signature header")
+	// ErrMissingSecret means the secret was empty, which would accept any body.
+	ErrMissingSecret = errors.New("webhook: secret must not be empty")
+	// ErrMissingSignature means the delivery carried no signature.
+	ErrMissingSignature = errors.New("webhook: missing signature header")
+	// ErrInvalidSignatureFormat means the signature is not "sha256=<hex>".
 	ErrInvalidSignatureFormat = errors.New("webhook: invalid signature format")
-	ErrSignatureMismatch      = errors.New("webhook: signature mismatch")
+	// ErrSignatureMismatch means the signature does not match the body.
+	ErrSignatureMismatch = errors.New("webhook: signature mismatch")
 )
 
-// Verify reports whether signature is a valid HMAC-SHA256 of body using secret.
+// Verify returns nil when signature is a valid HMAC-SHA256 of body using
+// secret, and one of the Err sentinels otherwise.
 // signature must be in GitHub's "sha256=<hex>" form, as delivered in the
 // X-Hub-Signature-256 header. Comparison runs in constant time.
 //

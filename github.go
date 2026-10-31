@@ -75,6 +75,7 @@ type RateLimitError struct {
 	Message string
 }
 
+// Error returns the status GitHub answered and its message.
 func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("%s: GitHub API returned status %d: %s", ErrRateLimited.Error(), e.StatusCode, e.Message)
 }
@@ -112,6 +113,7 @@ type APIError struct {
 	Message string
 }
 
+// Error returns the status GitHub answered and its message.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("GitHub API returned status %d: %s", e.StatusCode, e.Message)
 }
@@ -249,7 +251,8 @@ type Repository struct {
 	Name *string `json:"name,omitempty"`
 }
 
-// githubClient is a simple GitHub API client for creating installation tokens.
+// githubClient makes the few GitHub API calls an App token needs: minting and
+// revoking installation tokens, and finding an installation.
 type githubClient struct {
 	baseURL         *url.URL
 	httpClient      *http.Client
@@ -523,8 +526,11 @@ func isRateLimit403(resp *http.Response, body []byte) bool {
 // "zero seconds".
 func parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
 	v = strings.TrimSpace(v)
-	if secs, err := strconv.Atoi(v); err == nil {
-		return time.Duration(secs) * time.Second, true
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		// Bounded before multiplying: a huge value would overflow, and a
+		// negative wait reads as "retry now". Callers clamp the rest.
+		limit := int64(maxRetryAfter / time.Second)
+		return time.Duration(min(max(secs, -limit), limit)) * time.Second, true
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		return t.Sub(now), true

@@ -63,6 +63,8 @@ changes can affect existing code or scripts; they are listed under Changed.
 - An installation token carries what GitHub granted in its oauth2 Extra fields:
   `ExtraPermissions` and, for a token limited to some repositories, `ExtraRepositories`.
   `githubauth token --json` prints both (#90)
+- `NewApplicationTokenSource(12345, key)` compiles: `Identifier` admits `~int`, so an
+  untyped constant needs no `int64(...)` conversion
 - The CLI is a GitHub CLI extension: `gh extension install jferrl/gh-githubauth`, run as
   `gh githubauth` (#91)
 
@@ -84,6 +86,21 @@ changes can affect existing code or scripts; they are listed under Changed.
 
 ### Fixed
 
+- **A source used through `oauth2.NewClient`, as the README shows, refreshed 10s before
+  expiry, not 30s.** `NewClient` added its own cache over this package's.
+  `ReuseTokenSourceWithSkew` is now oauth2's cache with the longer window, which
+  `NewClient` uses as is. It works on copies of the tokens it caches, so caches sharing a
+  source no longer race
+- A `Retry-After` past about 292 years overflowed to a negative wait and retried at once.
+  It is capped at an hour, as documented
+- `$GITHUB_APP_INSTALLATION_ID` or `$GITHUB_APP_ID` past the int64 range became the
+  largest int64 instead of being reported as malformed
+- One `WithApplicationTokenExpiration` value applied by concurrent constructors raced
+- `--json` or `--agent` after a malformed flag, as in `token --bogus --json`, still
+  produced a plain-text error; it now produces the JSON document
+- `githubauth version` and `help` exited 0 when stdout could not be written
+- Errors from a missing key file or a command that cannot start now wrap their cause, so
+  `errors.Is(err, fs.ErrNotExist)` and `exec.ErrNotFound` match
 - The exit-2 hint for a 422 names `--permissions` as well as `--repos`, and the exit-5
   hint for a 404 names `--owner` (#88)
 

@@ -72,7 +72,7 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 	// The credential was minted, so a command that cannot start is the
 	// invocation to fix, not something to retry.
 	if err := cmd.Start(); err != nil {
-		return usagef("running %s: %v", argv[0], err)
+		return usagef("running %s: %w", argv[0], err)
 	}
 
 	done := make(chan struct{})

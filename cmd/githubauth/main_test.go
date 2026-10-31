@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -587,6 +588,90 @@ func TestRun(t *testing.T) {
 			env:        map[string]string{"GH_HOST": "ghe.example.com", "GITHUBAUTH_EXEC_HELPER": "1", "GITHUBAUTH_EXEC_CODE": "0"},
 			wantCode:   0,
 			wantStdout: contains("GH_HOST=ghe.example.com"),
+		},
+		{
+			// ParseInt saturates on overflow; that must not become an ID.
+			name: "an installation ID past int64 in the environment is malformed",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath}
+			},
+			env:        map[string]string{"GITHUB_APP_INSTALLATION_ID": "9223372036854775808"},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "is not a number",
+		},
+		{
+			// The flag package stops at --bogus and never reads --json.
+			name: "json after a malformed flag still renders the failure as JSON",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "--json"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			name: "json after a malformed value still renders the failure as JSON",
+			args: func(string) []string {
+				return []string{"token", "--installation", "nope", "--json"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			name: "agent after a malformed flag still renders the failure as JSON",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "--agent"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			name: "an explicit --json=true after a malformed flag is on",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "--json=true"}
+			},
+			wantCode:    exitUsage,
+			wantStdout:  contains(`"type":"githubauth.error"`),
+			quietStderr: true,
+		},
+		{
+			// The flag package stops at the first argument that is not a flag,
+			// so a --json past it is the command's, not githubauth's.
+			name: "a --json past a positional argument is not read",
+			args: func(string) []string {
+				return []string{"token", "--bogus", "gh", "--json"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+		},
+		{
+			name: "a --json value that is not a bool is not on",
+			args: func(string) []string {
+				return []string{"token", "--json=maybe", "--bogus"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+		},
+		{
+			name: "an explicit empty --json= is not on",
+			args: func(string) []string {
+				return []string{"token", "--json=", "--bogus"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+		},
+		{
+			// --json is the value of --key here, not a flag.
+			name: "a flag's value that looks like --json is a value",
+			args: func(string) []string {
+				return []string{"token", "--key", "--json", "--bogus"}
+			},
+			wantCode:   exitUsage,
+			wantStdout: isEmpty,
+			wantStderr: "flag provided but not defined",
 		},
 		{
 			name: "keep without exec is misuse",
@@ -1517,5 +1602,40 @@ func TestOriginRepoHost(t *testing.T) {
 				t.Errorf("originRepo(%q) with origin %s: ok = %v, want %v", tt.apiHost, tt.remote, ok, tt.ok)
 			}
 		})
+	}
+}
+
+// failingWriter is a stdout that cannot be written, such as a closed pipe.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// TestRunReportsAFailedWrite checks version and help do not claim success when
+// stdout took nothing, as credential output already did not.
+func TestRunReportsAFailedWrite(t *testing.T) {
+	clearEnv(t)
+
+	for _, cmd := range []string{"version", "help", "token --help"} {
+		t.Run(cmd, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if got := run(strings.Fields(cmd), strings.NewReader(""), failingWriter{}, &stderr); got != exitFailure {
+				t.Errorf("run(%q) = %d, want %d (stderr: %s)", cmd, got, exitFailure, stderr.String())
+			}
+		})
+	}
+}
+
+// TestErrorsKeepTheirCause checks the CLI's wrapped errors still match the
+// cause with errors.Is.
+func TestErrorsKeepTheirCause(t *testing.T) {
+	t.Parallel()
+
+	if _, err := readKey("no-such-app.pem", strings.NewReader("")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("readKey(missing) error = %v, want it to wrap fs.ErrNotExist", err)
+	}
+	tok := &oauth2.Token{AccessToken: "ghs_x"}
+	err := runWithToken([]string{"githubauth-no-such-command"}, tok, "", strings.NewReader(""), io.Discard, io.Discard)
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("runWithToken(missing command) error = %v, want it to wrap exec.ErrNotFound", err)
 	}
 }

@@ -565,9 +565,22 @@ func TestWithBaseURL_DrivesTokenThroughServer(t *testing.T) {
 		TokenType:   "Bearer",
 		Expiry:      expiration,
 	}
-	if !reflect.DeepEqual(got, want) {
+	if !sameToken(got, want) {
 		t.Errorf("Token() = %v, want %v", got, want)
 	}
+}
+
+// sameToken compares what a caller can see of a token: its public fields and
+// the extras this package documents, not oauth2's unexported bookkeeping.
+func sameToken(got, want *oauth2.Token) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return got.AccessToken == want.AccessToken &&
+		got.TokenType == want.TokenType &&
+		got.Expiry.Equal(want.Expiry) &&
+		reflect.DeepEqual(got.Extra(ExtraPermissions), want.Extra(ExtraPermissions)) &&
+		reflect.DeepEqual(got.Extra(ExtraRepositories), want.Extra(ExtraRepositories))
 }
 
 // TestWithBaseURL_SurvivesHTTPClientOrder guards against the ordering footgun:
@@ -752,7 +765,7 @@ func Test_installationTokenSource_Token(t *testing.T) {
 				t.Errorf("installationTokenSource.Token() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
+			if !sameToken(got, tt.want) {
 				t.Errorf("installationTokenSource.Token() = %v, want %v", got, tt.want)
 			}
 		})
@@ -1190,104 +1203,59 @@ func TestReuseTokenSourceWithSkew(t *testing.T) {
 	}
 }
 
-// TestWithExpirySkew_Wiring verifies that WithExpirySkew threads through to
-// the constructor-selected wrapper: a positive skew yields our
-// *reuseTokenSourceWithSkew, a non-positive skew falls back to
-// oauth2.ReuseTokenSource. We compare by type rather than by token-body
-// equality because the JWT payload is deterministic within a single clock
-// second, which would make a caching check ambiguous.
-func TestWithExpirySkew_Wiring(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name     string
-		skewOpts []ApplicationTokenOpt
-		wantSkew bool // true → *reuseTokenSourceWithSkew, false → delegated
-	}{
-		{
-			name:     "default skew uses wrapper",
-			skewOpts: nil,
-			wantSkew: true,
-		},
-		{
-			name:     "explicit positive skew uses wrapper",
-			skewOpts: []ApplicationTokenOpt{WithExpirySkew(5 * time.Second)},
-			wantSkew: true,
-		},
-		{
-			name:     "zero skew delegates to oauth2.ReuseTokenSource",
-			skewOpts: []ApplicationTokenOpt{WithExpirySkew(0)},
-			wantSkew: false,
-		},
-		{
-			name:     "negative skew delegates to oauth2.ReuseTokenSource",
-			skewOpts: []ApplicationTokenOpt{WithExpirySkew(-1 * time.Second)},
-			wantSkew: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ts, err := NewApplicationTokenSource(int64(99), privateKey, tt.skewOpts...)
-			if err != nil {
-				t.Fatalf("NewApplicationTokenSource: %v", err)
-			}
-			_, isSkew := ts.(*reuseTokenSourceWithSkew)
-			if isSkew != tt.wantSkew {
-				t.Errorf("token source is *reuseTokenSourceWithSkew = %v, want %v (type=%T)", isSkew, tt.wantSkew, ts)
-			}
-		})
-	}
-}
-
-// Test_WithInstallationExpirySkew_Wiring mirrors TestWithExpirySkew_Wiring one
-// layer down: the option must select the early-refresh wrapper for a positive
-// skew and fall back to oauth2.ReuseTokenSource for a non-positive one.
-func Test_WithInstallationExpirySkew_Wiring(t *testing.T) {
+// TestReuseTokenSourceWithSkew_ThroughNewClient checks the skew survives
+// oauth2.NewClient, the integration the README recommends. NewClient wraps any
+// source it does not recognise in its own cache, which refreshes only 10s
+// before expiry, so a token inside the skew was being reused.
+func TestReuseTokenSourceWithSkew_ThroughNewClient(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		opts     []InstallationTokenSourceOpt
-		wantSkew bool // true → *reuseTokenSourceWithSkew, false → delegated
-	}{
-		{
-			name:     "default skew uses wrapper",
-			opts:     nil,
-			wantSkew: true,
-		},
-		{
-			name:     "explicit positive skew uses wrapper",
-			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(5 * time.Minute)},
-			wantSkew: true,
-		},
-		{
-			name:     "zero skew delegates to oauth2.ReuseTokenSource",
-			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(0)},
-			wantSkew: false,
-		},
-		{
-			name:     "negative skew delegates to oauth2.ReuseTokenSource",
-			opts:     []InstallationTokenSourceOpt{WithInstallationExpirySkew(-1 * time.Second)},
-			wantSkew: false,
-		},
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+
+	var fetched atomic.Int32
+	// 20s left: past oauth2's 10s, inside the 30s skew, so it is stale here.
+	src := tokenSourceFunc(func() (*oauth2.Token, error) {
+		fetched.Add(1)
+		return &oauth2.Token{AccessToken: "t", Expiry: time.Now().Add(20 * time.Second)}, nil
+	})
+	client := oauth2.NewClient(context.Background(), ReuseTokenSourceWithSkew(nil, src, 30*time.Second))
+
+	for range 2 {
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		_ = resp.Body.Close()
 	}
+	if got := fetched.Load(); got != 2 {
+		t.Errorf("token fetches = %d, want 2: each request must refresh a token inside the skew", got)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+// TestReuseTokenSourceWithSkew_SharedToken checks caches sharing one source's
+// token do not write to it: oauth2's cache stores its window in each token it
+// holds, which raced when two caches held the same one. Run with -race.
+func TestReuseTokenSourceWithSkew_SharedToken(t *testing.T) {
+	t.Parallel()
 
-			ts := NewInstallationTokenSource(42, &countingTokenSource{}, tt.opts...)
-
-			_, isSkew := ts.(*reuseTokenSourceWithSkew)
-			if isSkew != tt.wantSkew {
-				t.Errorf("token source is *reuseTokenSourceWithSkew = %v, want %v (type=%T)", isSkew, tt.wantSkew, ts)
+	shared := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t", Expiry: time.Now().Add(time.Hour)})
+	var wg sync.WaitGroup
+	for range 4 {
+		src := ReuseTokenSourceWithSkew(nil, shared, 30*time.Second)
+		wg.Go(func() {
+			if _, err := src.Token(); err != nil {
+				t.Errorf("Token() error = %v", err)
 			}
 		})
 	}
+	wg.Wait()
 }
+
+// tokenSourceFunc adapts a function to oauth2.TokenSource.
+type tokenSourceFunc func() (*oauth2.Token, error)
+
+func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
 
 // Test_WithInstallationExpirySkew_AppliesToCache proves the configured window is
 // the one the cache actually refreshes on, not just the branch it selects. The
@@ -1797,6 +1765,109 @@ func Test_WithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
 
 			if got := signer.signs.Load(); got != 1 {
 				t.Errorf("signed %d times across %d calls, want 1; the token must survive in the cache", got, calls)
+			}
+		})
+	}
+}
+
+// TestNewApplicationTokenSource_IntegerLiteral checks an untyped constant, the
+// form a first-time caller writes, is accepted as an App ID.
+func TestNewApplicationTokenSource_IntegerLiteral(t *testing.T) {
+	t.Parallel()
+
+	key, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := NewApplicationTokenSource(12345, key)
+	if err != nil {
+		t.Fatalf("NewApplicationTokenSource(12345) error = %v", err)
+	}
+	tok, err := src.Token()
+	if err != nil {
+		t.Fatalf("Token() error = %v", err)
+	}
+	claims := jwt.RegisteredClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(tok.AccessToken, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims.Issuer != "12345" {
+		t.Errorf("iss = %q, want %q", claims.Issuer, "12345")
+	}
+}
+
+// TestWithApplicationTokenExpiration_SharedOption checks one option value can
+// be applied by concurrent constructors. Run with -race: applying it used to
+// write the normalized expiration back into what the option captured.
+func TestWithApplicationTokenExpiration_SharedOption(t *testing.T) {
+	t.Parallel()
+
+	key, err := generatePrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := WithApplicationTokenExpiration(time.Hour) // out of range, so normalized
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			if _, err := NewApplicationTokenSource(int64(1), key, opt); err != nil {
+				t.Errorf("NewApplicationTokenSource() error = %v", err)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// TestReuseTokenSourceWithSkew_NonPositiveDelegates checks a zero skew is
+// oauth2.ReuseTokenSource exactly: wrapping an existing oauth2 cache returns
+// that cache, as oauth2 does, rather than caching twice.
+func TestReuseTokenSourceWithSkew_NonPositiveDelegates(t *testing.T) {
+	t.Parallel()
+
+	inner := oauth2.ReuseTokenSource(nil, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}))
+	if got := ReuseTokenSourceWithSkew(nil, inner, 0); got != inner {
+		t.Errorf("ReuseTokenSourceWithSkew(nil, cache, 0) = %T wrapping the cache, want the cache itself", got)
+	}
+}
+
+// TestWithExpirySkew_SetsTheWindow checks the option is the window the JWT
+// cache refreshes on: a 2-minute JWT, live for 60s after the backdate, sits
+// inside a 9-minute skew, so every Token call signs anew, and outside the
+// default 30s one, so it is reused.
+func TestWithExpirySkew_SetsTheWindow(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		opts      []ApplicationTokenOpt
+		wantSigns int
+	}{
+		{name: "default skew reuses it", opts: nil, wantSigns: 1},
+		{name: "a skew past its life refreshes it", opts: []ApplicationTokenOpt{WithExpirySkew(9 * time.Minute)}, wantSigns: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := &stubSigner{pub: &rsaKey.PublicKey, signFn: func(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+				return rsaKey.Sign(r, digest, opts)
+			}}
+			opts := append([]ApplicationTokenOpt{WithApplicationTokenExpiration(2 * time.Minute)}, tt.opts...)
+			src, err := NewApplicationTokenSourceFromSigner(int64(1), stub, opts...)
+			if err != nil {
+				t.Fatalf("NewApplicationTokenSourceFromSigner() error = %v", err)
+			}
+			for range 2 {
+				if _, err := src.Token(); err != nil {
+					t.Fatalf("Token() error = %v", err)
+				}
+			}
+			if stub.gotCalls != tt.wantSigns {
+				t.Errorf("signs = %d, want %d", stub.gotCalls, tt.wantSigns)
 			}
 		})
 	}
