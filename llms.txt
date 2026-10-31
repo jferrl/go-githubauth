@@ -63,7 +63,7 @@ The same credentials without writing Go. Install with `go install github.com/jfe
 
 - `githubauth token [flags]` — print an installation access token. Flags: `--installation` (or `--owner` to look it up), `--repos`, `--permissions` (e.g. `contents:read,pull_requests:write`), `--keep`, `--base-url`, `--enterprise-url`.
 - `githubauth jwt [flags]` — print the App JWT, for the endpoints that take one. Flags: `--expiry`.
-- Shared flags: `--client-id` (or `--app-id` for a legacy App), `--key`, `--json` (adds the expiry, and for an installation token the permissions and repositories GitHub granted), `--exec`, `--agent`. `--repos acme/api` finds the installation like `--owner acme`.
+- Shared flags: `--client-id` (or `--app-id` for a legacy App), `--key`, `--json` (adds the expiry, and for an installation token the permissions and repositories GitHub granted), `--exec`, `--agent`. `--repos acme/api` finds the installation like `--owner acme`. With no `--installation`, `--owner`, `--repos` or `$GITHUB_APP_INSTALLATION_ID`, a clone's `origin` remote on the same host scopes the token to that repository.
 - Environment fallbacks for every flag: `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID`. A configured environment reduces the call to `githubauth token`.
 - `--key` accepts a file path, `-` for stdin, or the PEM itself, so the key can come from a secret manager without touching disk.
 - The token is the only thing on stdout, so it composes: `curl -H "Authorization: Bearer $(githubauth token)" https://api.github.com/installation/repositories`.

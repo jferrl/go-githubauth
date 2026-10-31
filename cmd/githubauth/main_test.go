@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -45,6 +46,18 @@ func clearEnv(t *testing.T) {
 	// These tests usually run inside a coding agent, which would otherwise
 	// switch the error output to JSON on stdout under them.
 	t.Setenv("GITHUBAUTH_AGENT_MODE", "0")
+
+	// The tests run in a clone of this repository, whose origin would
+	// otherwise name an installation on github.com for them. GIT_DIR and
+	// GIT_WORK_TREE would point git back at it from anywhere, and the
+	// caller's own git config could rewrite the test remotes.
+	t.Chdir(t.TempDir())
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE"} {
+		t.Setenv(key, "")
+		_ = os.Unsetenv(key)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
 
 func testKeyPEM(t *testing.T) []byte {
@@ -708,8 +721,10 @@ func TestRun(t *testing.T) {
 			wantStdout:  isExactly("ghs_flagwins"),
 		},
 		{
-			name:       "an explicit --installation 0 is missing, whatever the environment holds",
-			args:       func(string) []string { return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "0"} },
+			name: "an explicit --installation 0 is missing, whatever the environment holds",
+			args: func(string) []string {
+				return []string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--installation", "0"}
+			},
 			env:        map[string]string{"GITHUB_APP_INSTALLATION_ID": "12abc"},
 			wantCode:   exitUsage,
 			wantStdout: isEmpty,
@@ -787,7 +802,10 @@ func TestTokenRequests(t *testing.T) {
 		// termDuringRevoke sends githubauth a SIGTERM while the revocation is
 		// in flight.
 		termDuringRevoke bool
-		wantCode         int
+		// origin, when set, runs the test in a clone with this origin remote
+		// and no installation in the environment.
+		origin     func(serverURL string) string
+		wantCode   int
 		wantMint   string
 		wantBody   string
 		wantStdout string
@@ -818,6 +836,29 @@ func TestTokenRequests(t *testing.T) {
 			name:       "json shows what GitHub granted",
 			args:       []string{"--json"},
 			wantStdout: `"permissions":{"metadata":"read","pull_requests":"write"},"repositories":["api"]}`,
+		},
+		{
+			name:     "a clone's origin on the same host scopes the token to it",
+			origin:   func(u string) string { return u + "/acme/api.git" },
+			wantMint: "/app/installations/123/access_tokens",
+			wantBody: `{"repositories":["api"]}`,
+		},
+		{
+			name:     "a clone's origin on another host is ignored",
+			origin:   func(string) string { return "git@github.com:acme/api.git" },
+			wantCode: exitUsage,
+		},
+		{
+			name:     "an --owner given empty is not nothing",
+			origin:   func(u string) string { return u + "/acme/api.git" },
+			args:     []string{"--owner", ""},
+			wantCode: exitUsage,
+		},
+		{
+			name:     "an installation given beats the clone's origin",
+			origin:   func(u string) string { return u + "/acme/api.git" },
+			args:     []string{"--installation", "99"},
+			wantMint: "/app/installations/99/access_tokens",
 		},
 		{
 			name:     "repos and permissions go in one request",
@@ -931,6 +972,10 @@ func TestTokenRequests(t *testing.T) {
 			}))
 			defer srv.Close()
 			t.Setenv("GITHUBAUTH_EXEC_CALL", srv.URL+"/child")
+			if tt.origin != nil {
+				inClone(t, tt.origin(srv.URL))
+				t.Setenv("GITHUB_APP_INSTALLATION_ID", "")
+			}
 
 			args := append([]string{"token", "--client-id", "Iv1.abc", "--key", keyPath, "--base-url", srv.URL}, tt.args...)
 			var stdout, stderr bytes.Buffer
@@ -1294,6 +1339,56 @@ func TestUsageError(t *testing.T) {
 			var ue usageError
 			if !errors.As(tt.err, &ue) {
 				t.Error("errors.As did not recover the usageError")
+			}
+		})
+	}
+}
+
+// inClone runs the rest of the test in a fresh git clone whose origin is remote.
+func inClone(t *testing.T, remote string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", remote}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func TestParseRemote(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		remote            string
+		host, owner, repo string
+		ok                bool
+	}{
+		{remote: "https://github.com/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://github.com/acme/api", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://x-access-token:secret@github.com/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "git@github.com:acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "github.com:acme/api", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "ssh://git@ghe.example.com:2222/acme/api.git", host: "ghe.example.com", owner: "acme", repo: "api", ok: true},
+		{remote: "ssh://git@ssh.github.com:443/acme/api.git", host: "github.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://octo.ghe.com/acme/api/", host: "octo.ghe.com", owner: "acme", repo: "api", ok: true},
+		{remote: "https://github.com/acme"},
+		{remote: "https://github.com/acme/api/tree/main"},
+		{remote: "/srv/git/api.git"},
+		{remote: "file:///srv/git/acme/api.git"},
+		{remote: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.remote, func(t *testing.T) {
+			t.Parallel()
+
+			host, owner, repo, ok := parseRemote(tt.remote)
+			if host != tt.host || owner != tt.owner || repo != tt.repo || ok != tt.ok {
+				t.Errorf("parseRemote(%q) = %q, %q, %q, %v, want %q, %q, %q, %v",
+					tt.remote, host, owner, repo, ok, tt.host, tt.owner, tt.repo, tt.ok)
 			}
 		})
 	}

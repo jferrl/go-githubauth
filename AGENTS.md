@@ -35,7 +35,9 @@ narrow scope when you do:
 githubauth token --installation 12345 --repos api,web --permissions contents:read
 ```
 
-`--repos acme/api` also finds the installation, as `--owner acme` does. `--json`
+`--repos acme/api` also finds the installation, as `--owner acme` does. With no
+`--installation`, `--owner`, `--repos` or `$GITHUB_APP_INSTALLATION_ID`, a clone's
+`origin` remote on the same host names the repository, and the token covers it alone. `--json`
 reports the permissions and repositories GitHub actually granted, which is how to
 check the scope rather than assume it.
 

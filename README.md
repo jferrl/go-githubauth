@@ -123,6 +123,14 @@ githubauth token --owner acme --repos api
 githubauth token --repos acme/api    # the same
 ```
 
+With none of those, run inside a clone and the token is for that repository alone, found
+from its `origin` remote, the way `actions/create-github-app-token` defaults to the
+current repository:
+
+```bash
+cd api && githubauth token --exec -- gh pr merge 7
+```
+
 Run `githubauth help` for the rest.
 
 ### Keeping the token out of your logs
