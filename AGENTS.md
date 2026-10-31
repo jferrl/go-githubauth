@@ -20,7 +20,9 @@ githubauth token --installation 12345 --exec -- gh pr list
 
 The same works for `git` once it takes credentials from `gh` (`gh auth setup-git`):
 `githubauth token --installation 12345 --exec -- git push`. With `--enterprise-url`
-or `--base-url`, `--exec` also sets `$GH_HOST` unless you already have. For the
+or `--base-url`, `--exec` also sets `$GH_HOST`. An exported `$GH_HOST` naming
+another instance than the installation token's exits 2 before minting, and the command
+never sees `$GITHUB_APP_PRIVATE_KEY`. For the
 JWT, `gh` needs the header spelled out, because it sends `token` and GitHub takes
 a JWT only as `Bearer`:
 
@@ -59,7 +61,9 @@ Every flag falls back to an environment variable — `GITHUB_APP_CLIENT_ID`,
 configured environment reduces the call to `githubauth token`.
 
 `--key` takes a file path, `-` for stdin, or the PEM itself, which is what lets
-the key come from a secret manager without touching disk:
+the key come from a secret manager without touching disk. Pass the PEM itself
+through `$GITHUB_APP_PRIVATE_KEY` or stdin, never on the command line, where the
+process list shows it:
 
 ```bash
 vault kv get -field=pem secret/github-app | githubauth token --key - --installation 12345

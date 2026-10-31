@@ -24,6 +24,11 @@ const (
 	// message, so a misbehaving or hostile server cannot exhaust memory.
 	maxErrorBodyBytes = 64 << 10
 
+	// maxResponseBytes caps a successful response. A token scoped to the most
+	// repositories GitHub allows lists each in full, a few MiB; a server or
+	// proxy sending more than this is not answering the request.
+	maxResponseBytes = 16 << 20
+
 	// maxRetrySleep is the longest wait the client sleeps through before its one
 	// retry. A longer hint is returned to the caller instead: retrying before
 	// GitHub said to is bound to fail, and Token() would stall for nothing.
@@ -371,7 +376,7 @@ func (c *githubClient) doCreateInstallationToken(ctx context.Context, reqURL str
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 		var token InstallationToken
-		if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&token); err != nil {
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
 		return &token, nil
@@ -433,7 +438,7 @@ func (c *githubClient) findInstallationID(ctx context.Context, owner string) (in
 	var installation struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&installation); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&installation); err != nil {
 		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 	// Minting with 0 would fail as a missing ID and hide this answer.

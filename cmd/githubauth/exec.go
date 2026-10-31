@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -44,21 +46,25 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = environWithout(os.Environ(), all...)
+	// The child gets an installation token for an hour, never the App's key,
+	// which mints tokens for every installation until it is rotated.
+	cmd.Env = childEnviron()
 	for _, key := range keys {
 		cmd.Env = append(cmd.Env, key+"="+tok.AccessToken)
 	}
 	// Without it gh targets github.com, where this credential is useless. A
-	// GH_HOST the caller exported is theirs to keep.
+	// GH_HOST the caller exported was checked against host before minting.
 	if host != "" && os.Getenv("GH_HOST") == "" {
 		cmd.Env = append(cmd.Env, "GH_HOST="+host)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 
-	// Ctrl-C already reaches the child through the terminal's process group, so
-	// SIGINT is only held to keep githubauth alive until the child exits. A
-	// SIGTERM is usually sent to githubauth alone, and is passed on so the
-	// child does not outlive it with the credential in its environment.
+	// A SIGTERM, or a SIGINT from a supervisor, is sent to githubauth alone,
+	// and is passed on so the child does not outlive it with the credential in
+	// its environment. A Ctrl-C at the keyboard reaches the child itself when
+	// the child is in the terminal's foreground job, so then SIGINT is only
+	// held, to keep githubauth alive until the child exits.
+	inFg := foreground
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -75,7 +81,7 @@ func runWithToken(argv []string, tok *oauth2.Token, host string, stdin io.Reader
 		for {
 			select {
 			case sig := <-sigs:
-				if sig == syscall.SIGTERM {
+				if sig == syscall.SIGTERM || !inFg(cmd.Process.Pid) {
 					_ = cmd.Process.Signal(sig)
 				}
 			case <-done:
@@ -154,10 +160,25 @@ func ghHost(apiURL string) string {
 	}
 	host := strings.ToLower(u.Hostname())
 	if rest, ok := strings.CutPrefix(host, "api."); ok && !isEnterpriseHost(rest) {
-		return rest
+		host = rest
+	}
+	// gh honours a port in GH_HOST. Without it the credential would go to
+	// whatever answers on 443 of that host. gh speaks only https, so only its
+	// default can go; and a host with a port is never rewritten, since gh then
+	// treats it as Enterprise Server and would not put api. back.
+	if port := u.Port(); port != "" && (u.Scheme != "https" || port != "443") {
+		return net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	}
+	// An IPv6 address needs its brackets back to be a host gh can parse.
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
 	}
 	return host
 }
+
+// foreground is inForeground, replaceable by the tests, whose process group a
+// developer's terminal may or may not hold.
+var foreground = inForeground
 
 // isEnterpriseHost mirrors gh's own test for whether a host reads the
 // enterprise variables: anything but github.com and data residency (*.ghe.com).
@@ -165,13 +186,23 @@ func isEnterpriseHost(host string) bool {
 	return host != "" && host != "github.com" && !strings.HasSuffix(host, ".github.com") && !strings.HasSuffix(host, ".ghe.com")
 }
 
+// childEnviron is githubauth's environment without the App's private key or
+// any token already exported, for every process githubauth starts.
+func childEnviron() []string {
+	return environWithout(os.Environ(), append(append(slices.Clone(execTokenEnv), execEnterpriseEnv...), "GITHUB_APP_PRIVATE_KEY")...)
+}
+
+// foldEnvNames is whether environment variable names ignore case, as on
+// Windows, where github_app_private_key is the same variable.
+var foldEnvNames = runtime.GOOS == "windows"
+
 // environWithout drops keys from env so the token cannot be shadowed by one
 // the caller already exported.
 func environWithout(env []string, keys ...string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(keys, name) {
+		if !slices.ContainsFunc(keys, func(k string) bool { return k == name || foldEnvNames && strings.EqualFold(k, name) }) {
 			out = append(out, kv)
 		}
 	}

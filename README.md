@@ -99,7 +99,8 @@ curl -H "Authorization: Bearer $(githubauth token)" \
 Every flag falls back to an environment variable — `GITHUB_APP_CLIENT_ID`,
 `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` — so a configured CI step is just
 `githubauth token`. `--key` takes a file path, the PEM itself, or `-` to read stdin, which
-keeps the key off disk:
+keeps the key off disk. Pass the PEM itself through `$GITHUB_APP_PRIVATE_KEY` or stdin
+rather than on the command line, where other local users can read it in the process list:
 
 ```bash
 vault kv get -field=pem secret/github-app |
@@ -153,8 +154,11 @@ gh auth setup-git    # once
 githubauth token --installation 12345 --exec -- git push
 ```
 
-With `--enterprise-url` or `--base-url`, `--exec` also sets `$GH_HOST`, so `gh` talks to
-that instance instead of github.com. A `$GH_HOST` you exported yourself is kept.
+With `--enterprise-url` or `--base-url`, `--exec` also sets `$GH_HOST`, port included, so
+`gh` talks to that instance instead of github.com. A `$GH_HOST` you exported that names
+another instance is refused before an installation token is minted, since `gh` would send
+it there. If a proxy really serves it, set it inside the command:
+`--exec -- env GH_HOST=github.com gh …`. The command never sees `$GITHUB_APP_PRIVATE_KEY`.
 
 The JWT needs one more step. `gh` sends its credential as `token`, and GitHub accepts a JWT
 only as `Bearer`, so pass the header yourself:
