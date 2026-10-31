@@ -2,7 +2,6 @@ package githubauth
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -119,11 +118,16 @@ func TestSameHostRedirect(t *testing.T) {
 		from string
 		to   string
 		hops int
-		want error
+		// want is a sentinel matched with errors.Is; wantMsg an error of
+		// this package's own, matched by its message.
+		want    error
+		wantMsg string
 	}{
-		{name: "same host", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b", want: nil},
-		{name: "a tenth hop", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b", hops: 10, want: errors.New("stopped after 10 redirects")},
-		{name: "same host upgraded to TLS", from: "http://ghe.example.com/a", to: "https://ghe.example.com/a", want: nil},
+		{name: "same host", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b"},
+		{name: "a tenth hop", from: "https://ghe.example.com/a", to: "https://ghe.example.com/b", hops: 10, wantMsg: "stopped after 10 redirects"},
+		{name: "same host upgraded to TLS", from: "http://ghe.example.com/a", to: "https://ghe.example.com/a"},
+		// net/http stops on this sentinel itself, so an error that merely
+		// reads the same would not do.
 		{name: "another host", from: "https://ghe.example.com/a", to: "https://evil.example.com/a", want: http.ErrUseLastResponse},
 		{name: "TLS dropped", from: "https://ghe.example.com/a", to: "http://ghe.example.com/a", want: http.ErrUseLastResponse},
 	}
@@ -136,7 +140,13 @@ func TestSameHostRedirect(t *testing.T) {
 			for len(via) < tt.hops {
 				via = append(via, from)
 			}
-			if got := sameHostRedirect(to, via); fmt.Sprint(got) != fmt.Sprint(tt.want) {
+			got := sameHostRedirect(to, via)
+			switch {
+			case tt.wantMsg != "":
+				if got == nil || got.Error() != tt.wantMsg {
+					t.Errorf("sameHostRedirect() = %v, want %q", got, tt.wantMsg)
+				}
+			case !errors.Is(got, tt.want) || (tt.want == nil && got != nil):
 				t.Errorf("sameHostRedirect() = %v, want %v", got, tt.want)
 			}
 		})

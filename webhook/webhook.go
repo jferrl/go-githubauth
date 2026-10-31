@@ -31,7 +31,7 @@ const (
 )
 
 // DefaultMaxPayloadSize matches GitHub's documented 25 MiB delivery cap.
-const DefaultMaxPayloadSize int64 = 25 * 1024 * 1024
+const DefaultMaxPayloadSize int64 = 25 << 20
 
 const signaturePrefix = "sha256="
 

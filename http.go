@@ -1,7 +1,7 @@
 package githubauth
 
 import (
-	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"runtime"
@@ -36,14 +36,18 @@ func cleanHTTPClient() *http.Client {
 	}
 }
 
+// maxRedirects is how many redirects a request follows, as http.Client does by
+// default.
+const maxRedirects = 10
+
 // sameHostRedirect refuses a redirect that leaves the original host or drops
 // TLS. oauth2.Transport sets Authorization on every hop, which defeats the
 // header stripping http.Client does across hosts, so following one would hand
 // the App JWT to whoever the server points at. The refused 3xx is returned as
 // the response.
 func sameHostRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
 	}
 	orig := via[0].URL
 	if req.URL.Host != orig.Host || (orig.Scheme == "https" && req.URL.Scheme != "https") {

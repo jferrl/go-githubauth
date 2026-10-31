@@ -77,6 +77,9 @@ changes can affect existing code or scripts; they are listed under Changed.
   under `token --exec`, before anything is minted. It used to be kept, which v1.11.0 suggested for a
   `--base-url` proxy in front of github.com; set it inside the command instead:
   `--exec -- env GH_HOST=github.com gh …`
+- `NewPersonalAccessTokenSource("")`'s error now reads "personal access token is
+  required", like the package's other missing-argument errors. Match errors with
+  `errors.Is`/`errors.As`, not their text
 - **`InstallationPermissions` is no longer comparable**, because `Other` is a map. Code
   that compares two values with `==` or uses one as a map key no longer compiles (#88)
 - **Comparing installation token values, `*a == *b`, now panics** when GitHub's answer

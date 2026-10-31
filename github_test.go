@@ -8,6 +8,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -19,84 +21,83 @@ import (
 
 func Test_githubClient_withEnterpriseURL(t *testing.T) {
 	tests := []struct {
-		name            string
-		baseURL         string
-		wantErr         bool
-		expectedBaseURL string
+		name        string
+		baseURL     string
+		wantErr     bool
+		wantBaseURL string
 	}{
 		{
-			name:            "valid URL with first subdomain",
-			baseURL:         "https://api.github.example.com",
-			wantErr:         false,
-			expectedBaseURL: "https://api.github.example.com/",
+			name:        "valid URL with first subdomain",
+			baseURL:     "https://api.github.example.com",
+			wantErr:     false,
+			wantBaseURL: "https://api.github.example.com/",
 		},
 		{
-			name:            "valid URL with first subdomain and trailing slash",
-			baseURL:         "https://api.github.example.com/",
-			wantErr:         false,
-			expectedBaseURL: "https://api.github.example.com/",
+			name:        "valid URL with first subdomain and trailing slash",
+			baseURL:     "https://api.github.example.com/",
+			wantErr:     false,
+			wantBaseURL: "https://api.github.example.com/",
 		},
 		{
-			name:            "valid URL with second subdomain",
-			baseURL:         "https://ghes.api.example.com",
-			wantErr:         false,
-			expectedBaseURL: "https://ghes.api.example.com/",
+			name:        "valid URL with second subdomain",
+			baseURL:     "https://ghes.api.example.com",
+			wantErr:     false,
+			wantBaseURL: "https://ghes.api.example.com/",
 		},
 		{
-			name:            "valid URL with second subdomain and trailing slash",
-			baseURL:         "https://ghes.api.example.com/",
-			wantErr:         false,
-			expectedBaseURL: "https://ghes.api.example.com/",
+			name:        "valid URL with second subdomain and trailing slash",
+			baseURL:     "https://ghes.api.example.com/",
+			wantErr:     false,
+			wantBaseURL: "https://ghes.api.example.com/",
 		},
 		{
-			name:            "valid URL with path",
-			baseURL:         "https://github.example.com/api/v3",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/api/v3/",
+			name:        "valid URL with path",
+			baseURL:     "https://github.example.com/api/v3",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:            "valid URL with path and trailing slash",
-			baseURL:         "https://github.example.com/api/v3/",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/api/v3/",
+			name:        "valid URL with path and trailing slash",
+			baseURL:     "https://github.example.com/api/v3/",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:            "valid URL without path",
-			baseURL:         "https://github.example.com",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/api/v3/",
+			name:        "valid URL without path",
+			baseURL:     "https://github.example.com",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:            "valid URL without path but with trailing slash",
-			baseURL:         "https://github.example.com/",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/api/v3/",
+			name:        "valid URL without path but with trailing slash",
+			baseURL:     "https://github.example.com/",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:            "invalid URL with control characters",
-			baseURL:         "ht\ntp://invalid",
-			wantErr:         true,
-			expectedBaseURL: "",
+			name:        "invalid URL with control characters",
+			baseURL:     "ht\ntp://invalid",
+			wantErr:     true,
+			wantBaseURL: "",
 		},
 		{
-			name:            "URL with spaces",
-			baseURL:         "http://invalid url with spaces",
-			wantErr:         true,
-			expectedBaseURL: "",
+			name:        "URL with spaces",
+			baseURL:     "http://invalid url with spaces",
+			wantErr:     true,
+			wantBaseURL: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newGitHubClient(&http.Client{})
-			githubClient, err := client.withEnterpriseURL(tt.baseURL)
+			err := client.withEnterpriseURL(tt.baseURL)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("withEnterpriseURL(%v) error = %v", tt.baseURL, err)
+				t.Errorf("withEnterpriseURL(%q) error = %v, wantErr %v", tt.baseURL, err, tt.wantErr)
 			}
-
-			if err == nil && githubClient.baseURL.String() != tt.expectedBaseURL {
-				t.Errorf("withEnterpriseURL(%v) expected = %v, received = %v", tt.baseURL, tt.expectedBaseURL, githubClient.baseURL)
+			if err == nil && client.baseURL.String() != tt.wantBaseURL {
+				t.Errorf("withEnterpriseURL(%q).baseURL = %q, want %q", tt.baseURL, client.baseURL, tt.wantBaseURL)
 			}
 		})
 	}
@@ -104,66 +105,65 @@ func Test_githubClient_withEnterpriseURL(t *testing.T) {
 
 func Test_githubClient_withBaseURL(t *testing.T) {
 	tests := []struct {
-		name            string
-		baseURL         string
-		wantErr         bool
-		expectedBaseURL string
+		name        string
+		baseURL     string
+		wantErr     bool
+		wantBaseURL string
 	}{
 		{
-			name:            "GHEC data residency URL is used verbatim",
-			baseURL:         "https://api.octocorp.ghe.com",
-			wantErr:         false,
-			expectedBaseURL: "https://api.octocorp.ghe.com/",
+			name:        "GHEC data residency URL is used verbatim",
+			baseURL:     "https://api.octocorp.ghe.com",
+			wantErr:     false,
+			wantBaseURL: "https://api.octocorp.ghe.com/",
 		},
 		{
-			name:            "GHEC data residency URL with trailing slash",
-			baseURL:         "https://api.octocorp.ghe.com/",
-			wantErr:         false,
-			expectedBaseURL: "https://api.octocorp.ghe.com/",
+			name:        "GHEC data residency URL with trailing slash",
+			baseURL:     "https://api.octocorp.ghe.com/",
+			wantErr:     false,
+			wantBaseURL: "https://api.octocorp.ghe.com/",
 		},
 		{
-			name:            "plain host without /api/v3 suffix appended",
-			baseURL:         "https://github.example.com",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/",
+			name:        "plain host without /api/v3 suffix appended",
+			baseURL:     "https://github.example.com",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/",
 		},
 		{
-			name:            "existing path is preserved without /api/v3 munging",
-			baseURL:         "https://github.example.com/api/v3",
-			wantErr:         false,
-			expectedBaseURL: "https://github.example.com/api/v3/",
+			name:        "existing path is preserved without /api/v3 munging",
+			baseURL:     "https://github.example.com/api/v3",
+			wantErr:     false,
+			wantBaseURL: "https://github.example.com/api/v3/",
 		},
 		{
-			name:            "httptest-style host and port used verbatim",
-			baseURL:         "http://127.0.0.1:8080",
-			wantErr:         false,
-			expectedBaseURL: "http://127.0.0.1:8080/",
+			name:        "httptest-style host and port used verbatim",
+			baseURL:     "http://127.0.0.1:8080",
+			wantErr:     false,
+			wantBaseURL: "http://127.0.0.1:8080/",
 		},
 		{
-			name:            "invalid URL with control characters",
-			baseURL:         "ht\ntp://invalid",
-			wantErr:         true,
-			expectedBaseURL: "",
+			name:        "invalid URL with control characters",
+			baseURL:     "ht\ntp://invalid",
+			wantErr:     true,
+			wantBaseURL: "",
 		},
 		{
-			name:            "URL with spaces",
-			baseURL:         "http://invalid url with spaces",
-			wantErr:         true,
-			expectedBaseURL: "",
+			name:        "URL with spaces",
+			baseURL:     "http://invalid url with spaces",
+			wantErr:     true,
+			wantBaseURL: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newGitHubClient(&http.Client{})
-			githubClient, err := client.withBaseURL(tt.baseURL)
+			err := client.withBaseURL(tt.baseURL)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("withBaseURL(%v) error = %v", tt.baseURL, err)
+				t.Errorf("withBaseURL(%q) error = %v, wantErr %v", tt.baseURL, err, tt.wantErr)
 			}
-
-			if err == nil && githubClient.baseURL.String() != tt.expectedBaseURL {
-				t.Errorf("withBaseURL(%v) expected = %v, received = %v", tt.baseURL, tt.expectedBaseURL, githubClient.baseURL)
+			if err == nil && client.baseURL.String() != tt.wantBaseURL {
+				t.Errorf("withBaseURL(%q).baseURL = %q, want %q", tt.baseURL, client.baseURL, tt.wantBaseURL)
 			}
 		})
 	}
@@ -178,7 +178,7 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 		errorSubstring string
 	}{
 		{
-			name: "invalid JSON in options",
+			name: "options are marshaled into a successful request",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusCreated)
@@ -299,16 +299,16 @@ func Test_githubClient_createInstallationToken_ErrorCases(t *testing.T) {
 
 			if tt.wantErr && tt.errorSubstring != "" {
 				if err == nil {
-					t.Errorf("expected error containing %q, got nil", tt.errorSubstring)
+					t.Errorf("createInstallationToken() error = nil, want one containing %q", tt.errorSubstring)
 				} else if !strings.Contains(err.Error(), tt.errorSubstring) {
-					t.Errorf("expected error containing %q, got %q", tt.errorSubstring, err.Error())
+					t.Errorf("createInstallationToken() error = %q, want it to contain %q", err, tt.errorSubstring)
 				}
 			}
 		})
 	}
 }
 
-func Test_Ptr(t *testing.T) {
+func TestPtr(t *testing.T) {
 	t.Run("string pointer", func(t *testing.T) {
 		s := "test"
 		p := Ptr(s)
@@ -446,7 +446,7 @@ func Test_createInstallationToken_EndpointURL(t *testing.T) {
 			defer server.Close()
 
 			c := newGitHubClient(&http.Client{})
-			if _, err := c.withBaseURL(server.URL + tt.basePath); err != nil {
+			if err := c.withBaseURL(server.URL + tt.basePath); err != nil {
 				t.Fatalf("withBaseURL(%q): %v", tt.basePath, err)
 			}
 
@@ -537,8 +537,9 @@ func Test_createInstallationToken_SendsOptionsBody(t *testing.T) {
 
 			select {
 			case got := <-gotBody:
-				if got != tt.wantBody {
-					t.Errorf("request body = %q, want %q", got, tt.wantBody)
+				// Compared as JSON: key order and spacing are not the contract.
+				if !sameJSON(got, tt.wantBody) {
+					t.Errorf("request body = %s, want %s", got, tt.wantBody)
 				}
 			default:
 				t.Fatal("server received no request")
@@ -556,8 +557,9 @@ type throttleResponse struct {
 	writeToken bool // serialize an InstallationToken JSON body instead of body
 }
 
-func throttleHandler(t *testing.T, responses []throttleResponse, attempts *atomic.Int32) http.HandlerFunc {
-	t.Helper()
+// throttleHandler answers each request with the next of responses, starting
+// over once they run out, and counts the requests in attempts.
+func throttleHandler(responses []throttleResponse, attempts *atomic.Int32) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		n := attempts.Add(1)
 		idx := int(n-1) % len(responses)
@@ -584,12 +586,21 @@ func throttleHandler(t *testing.T, responses []throttleResponse, attempts *atomi
 func newClientForServer(t *testing.T, server *httptest.Server) *githubClient {
 	t.Helper()
 	c := newGitHubClient(&http.Client{Timeout: 10 * time.Second})
-	baseURL, err := c.baseURL.Parse(server.URL + "/")
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
+	if err := c.withBaseURL(server.URL); err != nil {
+		t.Fatalf("withBaseURL(%q) error = %v", server.URL, err)
 	}
-	c.baseURL = baseURL
 	return c
+}
+
+// recordSleeps makes c note each throttle wait instead of sleeping through it,
+// so a test asserts the wait it asked for rather than the time that passed.
+func recordSleeps(c *githubClient) *[]time.Duration {
+	var waits []time.Duration
+	c.sleep = func(_ context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return nil
+	}
+	return &waits
 }
 
 func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
@@ -600,8 +611,7 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 		wantAttempts  int32
 		wantErr       bool
 		wantRateLimit bool
-		minElapsed    time.Duration
-		maxElapsed    time.Duration
+		wantWaits     []time.Duration
 	}{
 		{
 			name: "429 with Retry-After=1 retries and succeeds",
@@ -612,8 +622,7 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 			retryEnabled: true,
 			wantAttempts: 2,
 			wantErr:      false,
-			minElapsed:   900 * time.Millisecond,
-			maxElapsed:   3 * time.Second,
+			wantWaits:    []time.Duration{time.Second},
 		},
 		{
 			name: "429 without Retry-After uses default 1s backoff",
@@ -624,8 +633,7 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 			retryEnabled: true,
 			wantAttempts: 2,
 			wantErr:      false,
-			minElapsed:   900 * time.Millisecond,
-			maxElapsed:   3 * time.Second,
+			wantWaits:    []time.Duration{time.Second},
 		},
 		{
 			name: "two consecutive 429s retry once then fail",
@@ -637,6 +645,7 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 			wantAttempts:  2,
 			wantErr:       true,
 			wantRateLimit: true,
+			wantWaits:     []time.Duration{0},
 		},
 		{
 			name: "WithRetryOnThrottle(false) disables retry",
@@ -672,15 +681,14 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var attempts atomic.Int32
-			server := httptest.NewServer(throttleHandler(t, tt.responses, &attempts))
+			server := httptest.NewServer(throttleHandler(tt.responses, &attempts))
 			defer server.Close()
 
 			client := newClientForServer(t, server)
 			client.retryOnThrottle = tt.retryEnabled
+			waits := recordSleeps(client)
 
-			start := time.Now()
 			_, err := client.createInstallationToken(context.Background(), 12345, nil)
-			elapsed := time.Since(start)
 
 			if got := attempts.Load(); got != tt.wantAttempts {
 				t.Errorf("attempts = %d, want %d", got, tt.wantAttempts)
@@ -691,22 +699,17 @@ func Test_createInstallationToken_RetryOnThrottle(t *testing.T) {
 			if tt.wantRateLimit && !errors.Is(err, ErrRateLimited) {
 				t.Errorf("err = %v, want errors.Is(err, ErrRateLimited)", err)
 			}
-			if tt.minElapsed > 0 && elapsed < tt.minElapsed {
-				t.Errorf("elapsed = %v, want >= %v", elapsed, tt.minElapsed)
-			}
-			if tt.maxElapsed > 0 && elapsed > tt.maxElapsed {
-				t.Errorf("elapsed = %v, want <= %v", elapsed, tt.maxElapsed)
+			if !slices.Equal(*waits, tt.wantWaits) {
+				t.Errorf("waits = %v, want %v", *waits, tt.wantWaits)
 			}
 		})
 	}
 }
 
 func Test_createInstallationToken_XRateLimitReset(t *testing.T) {
-	// x-ratelimit-reset is a Unix-second epoch, so the header value must be
-	// computed at request-time to avoid sub-second truncation that makes the
-	// elapsed-time assertion flaky. x-ratelimit-remaining is 0 because that is
-	// what marks a 403 as throttled rather than terminal; see
-	// Test_createInstallationToken_403PermissionNotThrottled.
+	// x-ratelimit-reset is a Unix-second epoch, computed at request time.
+	// x-ratelimit-remaining is 0 because that is what marks a 403 as throttled
+	// rather than terminal; see Test_createInstallationToken_403PermissionNotThrottled.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := attempts.Add(1)
@@ -727,10 +730,9 @@ func Test_createInstallationToken_XRateLimitReset(t *testing.T) {
 	defer server.Close()
 
 	client := newClientForServer(t, server)
+	waits := recordSleeps(client)
 
-	start := time.Now()
 	tok, err := client.createInstallationToken(context.Background(), 12345, nil)
-	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Fatalf("createInstallationToken err = %v", err)
@@ -741,12 +743,9 @@ func Test_createInstallationToken_XRateLimitReset(t *testing.T) {
 	if got := attempts.Load(); got != 2 {
 		t.Errorf("attempts = %d, want 2", got)
 	}
-	// Reset is now+3, Unix() can truncate up to 1s, so the floor is ~2s.
-	if elapsed < 1500*time.Millisecond {
-		t.Errorf("elapsed = %v, want >= 1.5s (reset hint was now+3s)", elapsed)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("elapsed = %v, want <= 5s (bounded by reset hint)", elapsed)
+	// Reset is now+3s, and Unix() truncates up to 1s, so the wait is 2-3s.
+	if len(*waits) != 1 || (*waits)[0] < 1500*time.Millisecond || (*waits)[0] > 3*time.Second {
+		t.Errorf("waits = %v, want one wait of 2-3s, until the reset", *waits)
 	}
 }
 
@@ -795,7 +794,7 @@ func Test_throttleDelay_KeepsGitHubsFullWait(t *testing.T) {
 func Test_createInstallationToken_LongWaitIsNotSleptThrough(t *testing.T) {
 	var attempts atomic.Int32
 	reset := strconv.FormatInt(time.Now().Add(40*time.Minute).Unix(), 10)
-	server := httptest.NewServer(throttleHandler(t, []throttleResponse{
+	server := httptest.NewServer(throttleHandler([]throttleResponse{
 		{
 			status:  http.StatusForbidden,
 			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
@@ -804,8 +803,9 @@ func Test_createInstallationToken_LongWaitIsNotSleptThrough(t *testing.T) {
 	}, &attempts))
 	defer server.Close()
 
-	start := time.Now()
-	_, err := newClientForServer(t, server).createInstallationToken(context.Background(), 12345, nil)
+	client := newClientForServer(t, server)
+	waits := recordSleeps(client)
+	_, err := client.createInstallationToken(context.Background(), 12345, nil)
 
 	var rle *RateLimitError
 	if !errors.As(err, &rle) {
@@ -817,38 +817,35 @@ func Test_createInstallationToken_LongWaitIsNotSleptThrough(t *testing.T) {
 	if got := attempts.Load(); got != 1 {
 		t.Errorf("attempts = %d, want 1", got)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("elapsed = %v, want an immediate return", elapsed)
+	if len(*waits) != 0 {
+		t.Errorf("waits = %v, want none: a wait past the cap is returned, not slept", *waits)
 	}
 }
 
 func Test_createInstallationToken_ContextCancelledDuringSleep(t *testing.T) {
 	var attempts atomic.Int32
-	server := httptest.NewServer(throttleHandler(t, []throttleResponse{
+	server := httptest.NewServer(throttleHandler([]throttleResponse{
 		{status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "30"}, body: `{"message":"rate limited"}`},
 	}, &attempts))
 	defer server.Close()
 
 	client := newClientForServer(t, server)
 
+	// Cancelled from inside the wait, so the cancellation always lands there
+	// rather than before or after it, as a timer would allow.
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(150 * time.Millisecond)
+	client.sleep = func(ctx context.Context, d time.Duration) error {
 		cancel()
-	}()
+		return sleepCtx(ctx, d)
+	}
 
-	start := time.Now()
 	_, err := client.createInstallationToken(ctx, 12345, nil)
-	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 	if !errors.Is(err, ErrRateLimited) {
 		t.Errorf("err = %v, want it to still wrap ErrRateLimited", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("elapsed = %v, expected ctx cancellation to abort sleep quickly", elapsed)
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Errorf("attempts = %d, want 1 (no retry after cancellation)", got)
@@ -897,55 +894,45 @@ func Test_throttleDelay_NonThrottledStatus(t *testing.T) {
 	}
 }
 
-func Test_WithRetryOnThrottle_AffectsSource(t *testing.T) {
-	// Drive a full installationTokenSource.Token() through a throttled server
-	// to verify the option propagates from the source down to the client.
-	var attempts atomic.Int32
-	server := httptest.NewServer(throttleHandler(t, []throttleResponse{
-		{status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "0"}, body: `{"message":"first"}`},
-		{status: http.StatusCreated, writeToken: true},
-	}, &attempts))
-	defer server.Close()
-
-	src := oauth2StaticSource{accessToken: "jwt"}
-
-	ts := NewInstallationTokenSource(42, src,
-		WithEnterpriseURL(server.URL),
-		WithRetryOnThrottle(true),
-	)
-
-	tok, err := ts.Token()
-	if err != nil {
-		t.Fatalf("Token() err = %v", err)
-	}
-	if tok.AccessToken != "test-token" {
-		t.Errorf("AccessToken = %q, want %q", tok.AccessToken, "test-token")
-	}
-	if got := attempts.Load(); got != 2 {
-		t.Errorf("attempts = %d, want 2", got)
+func TestWithRetryOnThrottle_AffectsSource(t *testing.T) {
+	// A full installationTokenSource.Token() through a throttled server shows
+	// the option reaches the client.
+	tests := []struct {
+		name         string
+		retry        bool
+		wantAttempts int32
+		wantErr      bool
+	}{
+		{name: "retry on", retry: true, wantAttempts: 2},
+		{name: "retry off", retry: false, wantAttempts: 1, wantErr: true},
 	}
 
-	var attempts2 atomic.Int32
-	server2 := httptest.NewServer(throttleHandler(t, []throttleResponse{
-		{status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "0"}, body: `{"message":"first"}`},
-		{status: http.StatusCreated, writeToken: true},
-	}, &attempts2))
-	defer server2.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			server := httptest.NewServer(throttleHandler([]throttleResponse{
+				{status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "0"}, body: `{"message":"first"}`},
+				{status: http.StatusCreated, writeToken: true},
+			}, &attempts))
+			defer server.Close()
 
-	ts2 := NewInstallationTokenSource(42, src,
-		WithEnterpriseURL(server2.URL),
-		WithRetryOnThrottle(false),
-	)
+			ts := NewInstallationTokenSource(42, oauth2StaticSource{accessToken: "jwt"},
+				WithEnterpriseURL(server.URL),
+				WithRetryOnThrottle(tt.retry),
+			)
+			tok, err := ts.Token()
 
-	_, err = ts2.Token()
-	if err == nil {
-		t.Fatalf("Token() err = nil, want ErrRateLimited")
-	}
-	if !errors.Is(err, ErrRateLimited) {
-		t.Errorf("err = %v, want errors.Is(err, ErrRateLimited)", err)
-	}
-	if got := attempts2.Load(); got != 1 {
-		t.Errorf("attempts = %d, want 1", got)
+			if tt.wantErr {
+				if !errors.Is(err, ErrRateLimited) {
+					t.Errorf("Token() error = %v, want errors.Is(err, ErrRateLimited)", err)
+				}
+			} else if err != nil || tok.AccessToken != "test-token" {
+				t.Errorf("Token() = %v, %v, want test-token", tok, err)
+			}
+			if got := attempts.Load(); got != tt.wantAttempts {
+				t.Errorf("attempts = %d, want %d", got, tt.wantAttempts)
+			}
+		})
 	}
 }
 
@@ -1065,7 +1052,6 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 		wantAttempts  int32
 		wantErr       bool
 		wantRateLimit bool
-		maxElapsed    time.Duration
 	}{
 		{
 			name: "403 permission error with healthy remaining is terminal",
@@ -1083,7 +1069,6 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 			wantAttempts:  1,
 			wantErr:       true,
 			wantRateLimit: false,
-			maxElapsed:    time.Second,
 		},
 		{
 			name: "403 with exhausted remaining is still throttled",
@@ -1101,7 +1086,6 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 			},
 			wantAttempts: 2,
 			wantErr:      false,
-			maxElapsed:   5 * time.Second,
 		},
 		{
 			name: "403 with Retry-After is still throttled",
@@ -1115,7 +1099,6 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 			},
 			wantAttempts: 2,
 			wantErr:      false,
-			maxElapsed:   5 * time.Second,
 		},
 		{
 			name: "429 without hint headers is still throttled",
@@ -1125,21 +1108,19 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 			},
 			wantAttempts: 2,
 			wantErr:      false,
-			maxElapsed:   5 * time.Second,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var attempts atomic.Int32
-			server := httptest.NewServer(throttleHandler(t, tt.responses, &attempts))
+			server := httptest.NewServer(throttleHandler(tt.responses, &attempts))
 			defer server.Close()
 
 			client := newClientForServer(t, server)
+			recordSleeps(client)
 
-			start := time.Now()
 			_, err := client.createInstallationToken(context.Background(), 12345, nil)
-			elapsed := time.Since(start)
 
 			if got := attempts.Load(); got != tt.wantAttempts {
 				t.Errorf("attempts = %d, want %d", got, tt.wantAttempts)
@@ -1149,9 +1130,6 @@ func Test_createInstallationToken_403PermissionNotThrottled(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrRateLimited); got != tt.wantRateLimit {
 				t.Errorf("errors.Is(err, ErrRateLimited) = %v, want %v (err = %v)", got, tt.wantRateLimit, err)
-			}
-			if elapsed > tt.maxElapsed {
-				t.Errorf("elapsed = %v, want <= %v", elapsed, tt.maxElapsed)
 			}
 		})
 	}
@@ -1241,7 +1219,7 @@ func Test_throttleDelay_HintlessRateLimit403WaitsAMinute(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}}
 	resp.Header.Set("X-RateLimit-Remaining", "0")
 
-	delay, retry := c403(t).throttleDelay(resp, []byte(`{"message":"API rate limit exceeded"}`))
+	delay, retry := newGitHubClient(&http.Client{}).throttleDelay(resp, []byte(`{"message":"API rate limit exceeded"}`))
 	if !retry {
 		t.Fatal("throttleDelay() retryable = false, want true")
 	}
@@ -1250,15 +1228,10 @@ func Test_throttleDelay_HintlessRateLimit403WaitsAMinute(t *testing.T) {
 	}
 }
 
-func c403(t *testing.T) *githubClient {
-	t.Helper()
-	return newGitHubClient(&http.Client{})
-}
-
-// Test_RateLimitError_CarriesRetryHint covers the reason the type exists: a
+// TestRateLimitError_CarriesRetryHint covers the reason the type exists: a
 // caller running its own backoff can read the wait the client already computed
 // from GitHub's headers, instead of re-parsing the response it never sees.
-func Test_RateLimitError_CarriesRetryHint(t *testing.T) {
+func TestRateLimitError_CarriesRetryHint(t *testing.T) {
 	tests := []struct {
 		name           string
 		status         int
@@ -1330,9 +1303,9 @@ func Test_RateLimitError_CarriesRetryHint(t *testing.T) {
 	}
 }
 
-// Test_RateLimitError_MessageFormat pins the rendered message. Callers log and
+// TestRateLimitError_MessageFormat pins the rendered message. Callers log and
 // match on it, so introducing the type must not reword it.
-func Test_RateLimitError_MessageFormat(t *testing.T) {
+func TestRateLimitError_MessageFormat(t *testing.T) {
 	err := &RateLimitError{
 		StatusCode: http.StatusForbidden,
 		RetryAfter: time.Second,
@@ -1349,9 +1322,9 @@ func Test_RateLimitError_MessageFormat(t *testing.T) {
 	}
 }
 
-// Test_RateLimitError_NotReturnedForTerminalFailures guards the boundary: a
+// TestRateLimitError_NotReturnedForTerminalFailures guards the boundary: a
 // permission failure or a plain 404 must not be surfaced as rate limiting.
-func Test_RateLimitError_NotReturnedForTerminalFailures(t *testing.T) {
+func TestRateLimitError_NotReturnedForTerminalFailures(t *testing.T) {
 	tests := []struct {
 		name    string
 		status  int
@@ -1410,9 +1383,9 @@ func Test_RateLimitError_NotReturnedForTerminalFailures(t *testing.T) {
 	}
 }
 
-// Test_APIError_MessageFormat pins the rendered message, which predates the
+// TestAPIError_MessageFormat pins the rendered message, which predates the
 // type: it was a fmt.Errorf string callers already log and match on.
-func Test_APIError_MessageFormat(t *testing.T) {
+func TestAPIError_MessageFormat(t *testing.T) {
 	err := &APIError{StatusCode: http.StatusNotFound, Message: `{"message":"Not Found"}`}
 
 	want := `GitHub API returned status 404: {"message":"Not Found"}`
@@ -1736,5 +1709,53 @@ func TestInstallationPermissions_MarshalJSONRefusesCaseVariant(t *testing.T) {
 	p := InstallationPermissions{Contents: Ptr("read"), Other: map[string]string{"Contents": "write"}}
 	if _, err := json.Marshal(p); err == nil {
 		t.Error("Marshal() err = nil, want the permission named twice refused")
+	}
+}
+
+// sameJSON reports whether a and b are the same JSON value, or both empty.
+func sameJSON(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	var av, bv any
+	return json.Unmarshal([]byte(a), &av) == nil && json.Unmarshal([]byte(b), &bv) == nil && reflect.DeepEqual(av, bv)
+}
+
+func TestSleepCtx(t *testing.T) {
+	t.Parallel()
+
+	// The retry tests record waits instead of spending them, so this is what
+	// shows the wait is real: it takes at least d, and ends early, mid-wait,
+	// when the context does.
+	tests := []struct {
+		name        string
+		d           time.Duration
+		cancelAfter time.Duration // 0: never cancelled
+		minElapsed  time.Duration
+		wantErr     error
+	}{
+		{name: "no wait", d: 0},
+		{name: "a wait lasts its duration", d: 20 * time.Millisecond, minElapsed: 20 * time.Millisecond},
+		{name: "a context done mid-wait ends it", d: time.Hour, cancelAfter: 10 * time.Millisecond, wantErr: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelAfter > 0 {
+				time.AfterFunc(tt.cancelAfter, cancel)
+			}
+
+			start := time.Now()
+			err := sleepCtx(ctx, tt.d)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("sleepCtx(%v) = %v, want %v", tt.d, err, tt.wantErr)
+			}
+			if elapsed := time.Since(start); elapsed < tt.minElapsed {
+				t.Errorf("sleepCtx(%v) returned after %v, want at least %v", tt.d, elapsed, tt.minElapsed)
+			}
+		})
 	}
 }

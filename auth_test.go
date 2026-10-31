@@ -23,15 +23,12 @@ import (
 	"testing"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 )
 
 func TestNewApplicationTokenSource(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 
 	tests := []struct {
 		name    string
@@ -93,29 +90,26 @@ func TestNewApplicationTokenSource(t *testing.T) {
 }
 
 func TestApplicationTokenSource_Token(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 
 	tests := []struct {
-		name        string
-		new         func() (oauth2.TokenSource, error)
-		expectedIss string
+		name    string
+		new     func() (oauth2.TokenSource, error)
+		wantIss string
 	}{
 		{
 			name: "numeric app id token generation",
 			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource(int64(12345), privateKey)
 			},
-			expectedIss: "12345",
+			wantIss: "12345",
 		},
 		{
 			name: "client id token generation",
 			new: func() (oauth2.TokenSource, error) {
 				return NewApplicationTokenSource("Iv1.1234567890abcdef", privateKey)
 			},
-			expectedIss: "Iv1.1234567890abcdef",
+			wantIss: "Iv1.1234567890abcdef",
 		},
 	}
 
@@ -123,22 +117,22 @@ func TestApplicationTokenSource_Token(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tokenSource, err := tt.new()
 			if err != nil {
-				t.Fatalf("Failed to create token source: %v", err)
+				t.Fatalf("NewApplicationTokenSource() error = %v", err)
 			}
 
 			token, err := tokenSource.Token()
 			if err != nil {
-				t.Fatalf("Failed to generate token: %v", err)
+				t.Fatalf("Token() error = %v", err)
 			}
 
 			if token.AccessToken == "" {
-				t.Error("Token access token is empty")
+				t.Error("Token().AccessToken is empty")
 			}
 			if token.TokenType != "Bearer" {
-				t.Errorf("Expected token type 'Bearer', got %s", token.TokenType)
+				t.Errorf("Token().TokenType = %q, want %q", token.TokenType, "Bearer")
 			}
 			if token.Expiry.IsZero() {
-				t.Error("Token expiry is not set")
+				t.Error("Token().Expiry is zero, want it set")
 			}
 
 			// Parse and verify JWT claims
@@ -150,29 +144,18 @@ func TestApplicationTokenSource_Token(t *testing.T) {
 				return &privKey.PublicKey, nil
 			})
 			if err != nil {
-				t.Fatalf("Failed to parse JWT token: %v", err)
+				t.Fatalf("parsing the JWT: %v", err)
 			}
 
 			claims, ok := jwtToken.Claims.(*jwt.RegisteredClaims)
 			if !ok {
-				t.Fatal("Failed to get JWT claims")
+				t.Fatalf("JWT claims are %T, want *jwt.RegisteredClaims", jwtToken.Claims)
 			}
 
-			if claims.Issuer != tt.expectedIss {
-				t.Errorf("Expected issuer %s, got %s", tt.expectedIss, claims.Issuer)
+			if claims.Issuer != tt.wantIss {
+				t.Errorf("iss = %q, want %q", claims.Issuer, tt.wantIss)
 			}
 		})
-	}
-}
-
-func TestApplicationTokenSource_Token_SigningError(t *testing.T) {
-	// Create an invalid private key that will cause signing to fail
-	invalidKey := []byte("invalid key")
-
-	// This should fail at NewApplicationTokenSource due to invalid PEM
-	_, err := NewApplicationTokenSource(int64(12345), invalidKey)
-	if err == nil {
-		t.Fatal("Expected error for invalid private key, got nil")
 	}
 }
 
@@ -326,9 +309,8 @@ func TestApplicationTokenSource_FromSigner_PropagatesError(t *testing.T) {
 	}
 }
 
-// TestApplicationTokenSource_JWTContract is a senior-grade contract test that
-// asserts the full JWT protocol compliance across both the PEM-encoded path
-// and the crypto.Signer path, using the same underlying RSA key.
+// TestApplicationTokenSource_JWTContract checks the PEM path and the
+// crypto.Signer path mint the same JWT, from the same RSA key.
 //
 // It covers the three gaps previously defended only by reasoning:
 //
@@ -466,10 +448,7 @@ func TestApplicationTokenSource_JWTContract(t *testing.T) {
 }
 
 func TestWithEnterpriseURL_InvalidURL(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 
 	appSrc, err := NewApplicationTokenSource(int64(12345), privateKey)
 	if err != nil {
@@ -485,7 +464,7 @@ func TestWithEnterpriseURL_InvalidURL(t *testing.T) {
 	)
 
 	if installationTokenSource == nil {
-		t.Fatal("Expected non-nil token source")
+		t.Fatal("NewInstallationTokenSource() = nil, want a source")
 	}
 
 	if _, err := installationTokenSource.Token(); err == nil {
@@ -494,10 +473,7 @@ func TestWithEnterpriseURL_InvalidURL(t *testing.T) {
 }
 
 func TestWithBaseURL_InvalidURL(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 
 	appSrc, err := NewApplicationTokenSource(int64(12345), privateKey)
 	if err != nil {
@@ -513,7 +489,7 @@ func TestWithBaseURL_InvalidURL(t *testing.T) {
 	)
 
 	if installationTokenSource == nil {
-		t.Fatal("Expected non-nil token source")
+		t.Fatal("NewInstallationTokenSource() = nil, want a source")
 	}
 
 	if _, err := installationTokenSource.Token(); err == nil {
@@ -543,10 +519,7 @@ func TestWithBaseURL_DrivesTokenThroughServer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 
 	appSrc, err := NewApplicationTokenSource(int64(34434), privateKey)
 	if err != nil {
@@ -602,10 +575,7 @@ func TestWithBaseURL_SurvivesHTTPClientOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -626,10 +596,7 @@ func TestWithBaseURL_SurvivesHTTPClientOrder(t *testing.T) {
 }
 
 func TestWithHTTPClient_NilClient(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -643,10 +610,7 @@ func TestWithHTTPClient_NilClient(t *testing.T) {
 }
 
 func TestWithHTTPClient_DoesNotMutateCallerClient(t *testing.T) {
-	privateKey, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	privateKey := testKeyPEM(t)
 	appSrc, err := NewApplicationTokenSource(int64(1), privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -665,85 +629,57 @@ func TestWithHTTPClient_DoesNotMutateCallerClient(t *testing.T) {
 }
 
 func Test_installationTokenSource_Token(t *testing.T) {
-	now := time.Now().UTC()
-	expiration := now.Add(10 * time.Minute)
+	expiration := time.Now().UTC().Add(10 * time.Minute)
 
-	mockedHTTPClient, cleanupSuccess := newMockedHTTPClient(
-		withRequestMatch(
-			postAppInstallationsAccessTokensByInstallationID,
-			InstallationToken{
-				Token:     "mocked-installation-token",
-				ExpiresAt: expiration,
-				Permissions: &InstallationPermissions{
-					PullRequests: Ptr("read"),
-					Other:        map[string]string{"installation_repositories": "write"},
-				},
-				Repositories: []Repository{
-					{
-						Name: Ptr("mocked-repo-1"),
-						ID:   Ptr(int64(1)),
-					},
-					{ID: Ptr(int64(2))},
-				},
+	// An Enterprise Server, so the request has to keep the /api/v3/ path.
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/app/installations/1/access_tokens" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(InstallationToken{
+			Token:     "mocked-installation-token",
+			ExpiresAt: expiration,
+			Permissions: &InstallationPermissions{
+				PullRequests: Ptr("read"),
+				Other:        map[string]string{"installation_repositories": "write"},
 			},
-		),
-	)
-	defer cleanupSuccess()
+			Repositories: []Repository{
+				{Name: Ptr("mocked-repo-1"), ID: Ptr(int64(1))},
+				{ID: Ptr(int64(2))},
+			},
+		})
+	}))
+	defer ok.Close()
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
+	}))
+	defer failing.Close()
 
-	errMockedHTTPClient, cleanupError := newMockedHTTPClient(
-		withRequestMatchHandler(
-			postAppInstallationsAccessTokensByInstallationID,
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
-			}),
-		))
-	defer cleanupError()
-
-	privateKey, err := generatePrivateKey()
+	appSrc, err := NewApplicationTokenSource(int64(34434), testKeyPEM(t), WithApplicationTokenExpiration(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	appSrc, err := NewApplicationTokenSource(int64(34434), privateKey, WithApplicationTokenExpiration(5*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	type fields struct {
-		id   int64
-		src  oauth2.TokenSource
-		opts []InstallationTokenSourceOpt
-	}
 	tests := []struct {
 		name    string
-		fields  fields
+		opts    []InstallationTokenSourceOpt
 		want    *oauth2.Token
 		wantErr bool
 	}{
 		{
-			name: "error getting installation token",
-			fields: fields{
-				id:  1,
-				src: appSrc,
-				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&InstallationTokenOptions{}),
-					WithHTTPClient(errMockedHTTPClient),
-				},
-			},
+			name:    "error getting installation token",
+			opts:    []InstallationTokenSourceOpt{WithInstallationTokenOptions(&InstallationTokenOptions{}), WithEnterpriseURL(failing.URL)},
 			wantErr: true,
 		},
 		{
 			name: "generate a new installation token",
-			fields: fields{
-				id:  1,
-				src: appSrc,
-				opts: []InstallationTokenSourceOpt{
-					WithInstallationTokenOptions(&InstallationTokenOptions{}),
-					WithContext(context.Background()),
-					WithEnterpriseURL("https://github.example.com"),
-					WithHTTPClient(mockedHTTPClient),
-				},
+			opts: []InstallationTokenSourceOpt{
+				WithInstallationTokenOptions(&InstallationTokenOptions{}),
+				WithContext(context.Background()),
+				WithEnterpriseURL(ok.URL),
 			},
 			// GitHub's answer rides along, including a permission with no field.
 			want: (&oauth2.Token{
@@ -758,48 +694,12 @@ func Test_installationTokenSource_Token(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := NewInstallationTokenSource(tt.fields.id, tt.fields.src, tt.fields.opts...)
-
-			got, err := tr.Token()
+			got, err := NewInstallationTokenSource(1, appSrc, tt.opts...).Token()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("installationTokenSource.Token() error = %v, wantErr %v", err, tt.wantErr)
-				return
+				t.Fatalf("Token() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if !sameToken(got, tt.want) {
-				t.Errorf("installationTokenSource.Token() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNewPersonalAccessTokenSource(t *testing.T) {
-	tests := []struct {
-		name  string
-		token string
-		want  oauth2.TokenSource
-	}{
-		{
-			name:  "empty token",
-			token: "",
-			want:  &personalAccessTokenSource{token: ""},
-		},
-		{
-			name:  "classic personal access token",
-			token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456",
-			want:  &personalAccessTokenSource{token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456"},
-		},
-		{
-			name:  "fine-grained personal access token",
-			token: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-			want:  &personalAccessTokenSource{token: "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := NewPersonalAccessTokenSource(tt.token)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewPersonalAccessTokenSource() = %v, want %v", got, tt.want)
+				t.Errorf("Token() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -874,18 +774,14 @@ func TestPersonalAccessTokenSource_Token(t *testing.T) {
 	}
 }
 
-func generatePrivateKey() ([]byte, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+// testKeyPEM returns a fresh RSA private key in PEM form.
+func testKeyPEM(t testing.TB) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, err
+		t.Fatalf("generating a test key: %v", err)
 	}
-	// Encode the private key to the PEM format
-	privateKeyPEM := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	}
-
-	return pem.EncodeToMemory(privateKeyPEM), nil
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
 // countingSource is a test oauth2.TokenSource that counts Token() calls,
@@ -935,272 +831,251 @@ func newShortLivedSource(validFor time.Duration) *countingSource {
 }
 
 func TestReuseTokenSourceWithSkew(t *testing.T) {
-	tests := []struct {
-		name string
-		run  func(t *testing.T)
-	}{
-		{
-			// Token valid for 1s, skew=500ms. First Token() caches; after 600ms
-			// the cached token is within the skew window and the next call
-			// must refresh.
-			name: "refreshes within skew window",
-			run: func(t *testing.T) {
-				src := newShortLivedSource(1 * time.Second)
-				ts := ReuseTokenSourceWithSkew(nil, src, 500*time.Millisecond)
+	// Token valid for 1s, skew=500ms. First Token() caches; after 600ms
+	// the cached token is within the skew window and the next call
+	// must refresh.
+	t.Run("refreshes within skew window", func(t *testing.T) {
+		src := newShortLivedSource(1 * time.Second)
+		ts := ReuseTokenSourceWithSkew(nil, src, 500*time.Millisecond)
 
-				first, err := ts.Token()
-				if err != nil {
-					t.Fatalf("first Token(): %v", err)
-				}
-				if got := src.callCount(); got != 1 {
-					t.Fatalf("upstream calls after first Token() = %d, want 1", got)
-				}
+		first, err := ts.Token()
+		if err != nil {
+			t.Fatalf("first Token(): %v", err)
+		}
+		if got := src.callCount(); got != 1 {
+			t.Fatalf("upstream calls after first Token() = %d, want 1", got)
+		}
 
-				// Cached call while still outside the skew window: no refresh.
-				cached, err := ts.Token()
-				if err != nil {
-					t.Fatalf("cached Token(): %v", err)
-				}
-				if got := src.callCount(); got != 1 {
-					t.Fatalf("upstream calls after cached Token() = %d, want 1", got)
-				}
-				if cached.AccessToken != first.AccessToken {
-					t.Errorf("cached token = %q, want %q", cached.AccessToken, first.AccessToken)
-				}
+		// Cached call while still outside the skew window: no refresh.
+		cached, err := ts.Token()
+		if err != nil {
+			t.Fatalf("cached Token(): %v", err)
+		}
+		if got := src.callCount(); got != 1 {
+			t.Fatalf("upstream calls after cached Token() = %d, want 1", got)
+		}
+		if cached.AccessToken != first.AccessToken {
+			t.Errorf("cached token = %q, want %q", cached.AccessToken, first.AccessToken)
+		}
 
-				// Enter the skew window (600ms elapsed, 400ms to exp ≤ 500ms skew).
-				time.Sleep(600 * time.Millisecond)
+		// Enter the skew window (600ms elapsed, 400ms to exp ≤ 500ms skew).
+		time.Sleep(600 * time.Millisecond)
 
-				refreshed, err := ts.Token()
-				if err != nil {
-					t.Fatalf("refresh Token(): %v", err)
-				}
-				if got := src.callCount(); got != 2 {
-					t.Errorf("upstream calls after refresh = %d, want 2", got)
-				}
-				if refreshed.AccessToken == first.AccessToken {
-					t.Errorf("refreshed token = %q, want a new token", refreshed.AccessToken)
-				}
-			},
-		},
-		{
-			// Skew 2s, tokens valid for 1s. Every call lands inside the skew
-			// window, so the cache never hits.
-			name: "skew exceeds validity always refreshes",
-			run: func(t *testing.T) {
-				src := newShortLivedSource(1 * time.Second)
-				ts := ReuseTokenSourceWithSkew(nil, src, 2*time.Second)
+		refreshed, err := ts.Token()
+		if err != nil {
+			t.Fatalf("refresh Token(): %v", err)
+		}
+		if got := src.callCount(); got != 2 {
+			t.Errorf("upstream calls after refresh = %d, want 2", got)
+		}
+		if refreshed.AccessToken == first.AccessToken {
+			t.Errorf("refreshed token = %q, want a new token", refreshed.AccessToken)
+		}
+	})
 
-				const iterations = 5
-				var last string
-				for i := range iterations {
-					tok, err := ts.Token()
-					if err != nil {
-						t.Fatalf("Token() #%d: %v", i, err)
+	// Skew 2s, tokens valid for 1s. Every call lands inside the skew
+	// window, so the cache never hits.
+	t.Run("skew exceeds validity always refreshes", func(t *testing.T) {
+		src := newShortLivedSource(1 * time.Second)
+		ts := ReuseTokenSourceWithSkew(nil, src, 2*time.Second)
+
+		const iterations = 5
+		var last string
+		for i := range iterations {
+			tok, err := ts.Token()
+			if err != nil {
+				t.Fatalf("Token() #%d: %v", i, err)
+			}
+			if tok.AccessToken == last {
+				t.Errorf("Token() #%d returned cached %q, want refresh", i, tok.AccessToken)
+			}
+			last = tok.AccessToken
+		}
+		if got := src.callCount(); got != iterations {
+			t.Errorf("upstream calls = %d, want %d", got, iterations)
+		}
+	})
+
+	// Regression: with skew<=0 the wrapper must match
+	// oauth2.ReuseTokenSource exactly. We run identical scenarios
+	// through both implementations and assert the same upstream call
+	// counts and the same AccessTokens at every step.
+	t.Run("zero skew matches ReuseTokenSource", func(t *testing.T) {
+		scenarios := []struct {
+			name   string
+			seed   *oauth2.Token
+			makeFn func(call int) *oauth2.Token
+			calls  int
+		}{
+			{
+				name: "nil seed, long-lived tokens, repeated calls cache",
+				seed: nil,
+				makeFn: func(call int) *oauth2.Token {
+					return &oauth2.Token{
+						AccessToken: fmt.Sprintf("long-%d", call),
+						TokenType:   "Bearer",
+						Expiry:      time.Now().Add(1 * time.Hour),
 					}
-					if tok.AccessToken == last {
-						t.Errorf("Token() #%d returned cached %q, want refresh", i, tok.AccessToken)
+				},
+				calls: 5,
+			},
+			{
+				name: "pre-seeded long-lived token is reused",
+				seed: &oauth2.Token{
+					AccessToken: "seed",
+					TokenType:   "Bearer",
+					Expiry:      time.Now().Add(1 * time.Hour),
+				},
+				makeFn: func(call int) *oauth2.Token {
+					return &oauth2.Token{
+						AccessToken: fmt.Sprintf("fresh-%d", call),
+						TokenType:   "Bearer",
+						Expiry:      time.Now().Add(1 * time.Hour),
 					}
-					last = tok.AccessToken
-				}
-				if got := src.callCount(); got != iterations {
-					t.Errorf("upstream calls = %d, want %d", got, iterations)
-				}
+				},
+				calls: 3,
 			},
-		},
-		{
-			// Regression: with skew<=0 the wrapper must match
-			// oauth2.ReuseTokenSource exactly. We run identical scenarios
-			// through both implementations and assert the same upstream call
-			// counts and the same AccessTokens at every step.
-			name: "zero skew matches ReuseTokenSource",
-			run: func(t *testing.T) {
-				scenarios := []struct {
-					name   string
-					seed   *oauth2.Token
-					makeFn func(call int) *oauth2.Token
-					calls  int
-				}{
-					{
-						name: "nil seed, long-lived tokens, repeated calls cache",
-						seed: nil,
-						makeFn: func(call int) *oauth2.Token {
-							return &oauth2.Token{
-								AccessToken: fmt.Sprintf("long-%d", call),
-								TokenType:   "Bearer",
-								Expiry:      time.Now().Add(1 * time.Hour),
-							}
-						},
-						calls: 5,
-					},
-					{
-						name: "pre-seeded long-lived token is reused",
-						seed: &oauth2.Token{
-							AccessToken: "seed",
-							TokenType:   "Bearer",
-							Expiry:      time.Now().Add(1 * time.Hour),
-						},
-						makeFn: func(call int) *oauth2.Token {
-							return &oauth2.Token{
-								AccessToken: fmt.Sprintf("fresh-%d", call),
-								TokenType:   "Bearer",
-								Expiry:      time.Now().Add(1 * time.Hour),
-							}
-						},
-						calls: 3,
-					},
-				}
-				for _, s := range scenarios {
-					t.Run(s.name, func(t *testing.T) {
-						skewSrc := &countingSource{mkToken: s.makeFn}
-						plainSrc := &countingSource{mkToken: s.makeFn}
+		}
+		for _, s := range scenarios {
+			t.Run(s.name, func(t *testing.T) {
+				skewSrc := &countingSource{mkToken: s.makeFn}
+				plainSrc := &countingSource{mkToken: s.makeFn}
 
-						skewTS := ReuseTokenSourceWithSkew(s.seed, skewSrc, 0)
-						plainTS := oauth2.ReuseTokenSource(s.seed, plainSrc)
+				skewTS := ReuseTokenSourceWithSkew(s.seed, skewSrc, 0)
+				plainTS := oauth2.ReuseTokenSource(s.seed, plainSrc)
 
-						for i := 0; i < s.calls; i++ {
-							skewTok, skewErr := skewTS.Token()
-							plainTok, plainErr := plainTS.Token()
+				for i := range s.calls {
+					skewTok, skewErr := skewTS.Token()
+					plainTok, plainErr := plainTS.Token()
 
-							if (skewErr == nil) != (plainErr == nil) {
-								t.Fatalf("call %d error mismatch: skew=%v plain=%v", i, skewErr, plainErr)
-							}
-							if skewErr != nil {
-								continue
-							}
-							if skewTok.AccessToken != plainTok.AccessToken {
-								t.Errorf("call %d token mismatch: skew=%q plain=%q", i, skewTok.AccessToken, plainTok.AccessToken)
-							}
-						}
-						if skewSrc.callCount() != plainSrc.callCount() {
-							t.Errorf("upstream call counts differ: skew=%d plain=%d", skewSrc.callCount(), plainSrc.callCount())
-						}
-					})
+					if (skewErr == nil) != (plainErr == nil) {
+						t.Fatalf("call %d error mismatch: skew=%v plain=%v", i, skewErr, plainErr)
+					}
+					if skewErr != nil {
+						continue
+					}
+					if skewTok.AccessToken != plainTok.AccessToken {
+						t.Errorf("call %d token mismatch: skew=%q plain=%q", i, skewTok.AccessToken, plainTok.AccessToken)
+					}
 				}
-			},
-		},
-		{
-			// 100 goroutines fire Token() against a slow upstream that mints a
-			// long-lived token. The mutex must funnel them so only the first
-			// reaches upstream; the rest return the cached value.
-			name: "concurrent Token calls collapse to one upstream fetch",
-			run: func(t *testing.T) {
-				src := &countingSource{
-					delay: 50 * time.Millisecond,
-					mkToken: func(call int) *oauth2.Token {
-						return &oauth2.Token{
-							AccessToken: fmt.Sprintf("token-%d", call),
-							TokenType:   "Bearer",
-							Expiry:      time.Now().Add(1 * time.Hour),
-						}
-					},
+				if skewSrc.callCount() != plainSrc.callCount() {
+					t.Errorf("upstream call counts differ: skew=%d plain=%d", skewSrc.callCount(), plainSrc.callCount())
 				}
-				ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
+			})
+		}
+	})
 
-				const goroutines = 100
-				var (
-					wg     sync.WaitGroup
-					mu     sync.Mutex
-					tokens = make(map[string]int, goroutines)
-					errs   []error
-				)
-				wg.Add(goroutines)
-				start := make(chan struct{})
-				for range goroutines {
-					go func() {
-						defer wg.Done()
-						<-start
-						tok, err := ts.Token()
-						mu.Lock()
-						defer mu.Unlock()
-						if err != nil {
-							errs = append(errs, err)
-							return
-						}
-						tokens[tok.AccessToken]++
-					}()
-				}
-				close(start)
-				wg.Wait()
-
-				if len(errs) != 0 {
-					t.Fatalf("Token() errors: %v", errs)
-				}
-				if got := src.callCount(); got != 1 {
-					t.Errorf("upstream calls = %d, want 1", got)
-				}
-				if len(tokens) != 1 {
-					t.Errorf("distinct tokens = %d, want 1 (%v)", len(tokens), tokens)
-				}
-				if tokens["token-1"] != goroutines {
-					t.Errorf("goroutines that got token-1 = %d, want %d", tokens["token-1"], goroutines)
-				}
-			},
-		},
-		{
-			// A valid seed token passed into the wrapper must be served
-			// without touching upstream. This is the hot-start path: callers
-			// rehydrating a cached token from disk or config should not incur
-			// an extra round trip.
-			name: "valid seed token served without upstream call",
-			run: func(t *testing.T) {
-				seed := &oauth2.Token{
-					AccessToken: "seeded",
+	// 100 goroutines fire Token() against a slow upstream that mints a
+	// long-lived token. The mutex must funnel them so only the first
+	// reaches upstream; the rest return the cached value.
+	t.Run("concurrent Token calls collapse to one upstream fetch", func(t *testing.T) {
+		src := &countingSource{
+			delay: 50 * time.Millisecond,
+			mkToken: func(call int) *oauth2.Token {
+				return &oauth2.Token{
+					AccessToken: fmt.Sprintf("token-%d", call),
 					TokenType:   "Bearer",
 					Expiry:      time.Now().Add(1 * time.Hour),
 				}
-				src := &countingSource{
-					mkToken: func(call int) *oauth2.Token {
-						return &oauth2.Token{
-							AccessToken: fmt.Sprintf("fresh-%d", call),
-							TokenType:   "Bearer",
-							Expiry:      time.Now().Add(1 * time.Hour),
-						}
-					},
-				}
-				ts := ReuseTokenSourceWithSkew(seed, src, 30*time.Second)
+			},
+		}
+		ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
 
+		const goroutines = 100
+		var (
+			wg     sync.WaitGroup
+			mu     sync.Mutex
+			tokens = make(map[string]int, goroutines)
+			errs   []error
+		)
+		wg.Add(goroutines)
+		start := make(chan struct{})
+		for range goroutines {
+			go func() {
+				defer wg.Done()
+				<-start
 				tok, err := ts.Token()
+				mu.Lock()
+				defer mu.Unlock()
 				if err != nil {
-					t.Fatalf("Token(): %v", err)
+					errs = append(errs, err)
+					return
 				}
-				if tok.AccessToken != "seeded" {
-					t.Errorf("AccessToken = %q, want %q (seed)", tok.AccessToken, "seeded")
-				}
-				if got := src.callCount(); got != 0 {
-					t.Errorf("upstream calls = %d, want 0 (seed should short-circuit)", got)
-				}
-			},
-		},
-		{
-			// Upstream errors must surface to the caller verbatim (wrappable
-			// with errors.Is) and must not be cached — the next call has to
-			// retry the upstream. Caching a failure would turn a transient
-			// hiccup into a permanent outage.
-			name: "upstream error is propagated and not cached",
-			run: func(t *testing.T) {
-				sentinel := errors.New("upstream unavailable")
-				src := &countingSource{
-					err:     sentinel,
-					mkToken: func(int) *oauth2.Token { return nil },
-				}
-				ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
+				tokens[tok.AccessToken]++
+			}()
+		}
+		close(start)
+		wg.Wait()
 
-				for i := range 3 {
-					_, err := ts.Token()
-					if !errors.Is(err, sentinel) {
-						t.Errorf("call %d: err = %v, want errors.Is(%v)", i, err, sentinel)
-					}
-				}
-				if got := src.callCount(); got != 3 {
-					t.Errorf("upstream calls = %d, want 3 (errors must not be cached)", got)
+		if len(errs) != 0 {
+			t.Fatalf("Token() errors: %v", errs)
+		}
+		if got := src.callCount(); got != 1 {
+			t.Errorf("upstream calls = %d, want 1", got)
+		}
+		if len(tokens) != 1 {
+			t.Errorf("distinct tokens = %d, want 1 (%v)", len(tokens), tokens)
+		}
+		if tokens["token-1"] != goroutines {
+			t.Errorf("goroutines that got token-1 = %d, want %d", tokens["token-1"], goroutines)
+		}
+	})
+
+	// A valid seed token passed into the wrapper must be served
+	// without touching upstream. This is the hot-start path: callers
+	// rehydrating a cached token from disk or config should not incur
+	// an extra round trip.
+	t.Run("valid seed token served without upstream call", func(t *testing.T) {
+		seed := &oauth2.Token{
+			AccessToken: "seeded",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		}
+		src := &countingSource{
+			mkToken: func(call int) *oauth2.Token {
+				return &oauth2.Token{
+					AccessToken: fmt.Sprintf("fresh-%d", call),
+					TokenType:   "Bearer",
+					Expiry:      time.Now().Add(1 * time.Hour),
 				}
 			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.run)
-	}
+		}
+		ts := ReuseTokenSourceWithSkew(seed, src, 30*time.Second)
+
+		tok, err := ts.Token()
+		if err != nil {
+			t.Fatalf("Token(): %v", err)
+		}
+		if tok.AccessToken != "seeded" {
+			t.Errorf("AccessToken = %q, want %q (seed)", tok.AccessToken, "seeded")
+		}
+		if got := src.callCount(); got != 0 {
+			t.Errorf("upstream calls = %d, want 0 (seed should short-circuit)", got)
+		}
+	})
+
+	// Upstream errors must surface to the caller verbatim (wrappable
+	// with errors.Is) and must not be cached — the next call has to
+	// retry the upstream. Caching a failure would turn a transient
+	// hiccup into a permanent outage.
+	t.Run("upstream error is propagated and not cached", func(t *testing.T) {
+		sentinel := errors.New("upstream unavailable")
+		src := &countingSource{
+			err:     sentinel,
+			mkToken: func(int) *oauth2.Token { return nil },
+		}
+		ts := ReuseTokenSourceWithSkew(nil, src, 30*time.Second)
+
+		for i := range 3 {
+			_, err := ts.Token()
+			if !errors.Is(err, sentinel) {
+				t.Errorf("call %d: err = %v, want errors.Is(%v)", i, err, sentinel)
+			}
+		}
+		if got := src.callCount(); got != 3 {
+			t.Errorf("upstream calls = %d, want 3 (errors must not be cached)", got)
+		}
+	})
 }
 
 // TestReuseTokenSourceWithSkew_ThroughNewClient checks the skew survives
@@ -1257,11 +1132,11 @@ type tokenSourceFunc func() (*oauth2.Token, error)
 
 func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
 
-// Test_WithInstallationExpirySkew_AppliesToCache proves the configured window is
+// TestWithInstallationExpirySkew_AppliesToCache proves the configured window is
 // the one the cache actually refreshes on, not just the branch it selects. The
 // installation token expires in 2s and the skew is 10s, so every Token() lands
 // inside the window and must refetch.
-func Test_WithInstallationExpirySkew_AppliesToCache(t *testing.T) {
+func TestWithInstallationExpirySkew_AppliesToCache(t *testing.T) {
 	t.Parallel()
 
 	var minted atomic.Int32
@@ -1312,11 +1187,11 @@ func (z *zeroExpiryTokenSource) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
-// Test_ReuseTokenSourceWithSkew_ZeroExpiry proves a token with no expiry is
+// TestReuseTokenSourceWithSkew_ZeroExpiry proves a token with no expiry is
 // cached indefinitely. The skew is a comparison against exp, so with no exp
 // there is nothing to refresh early against: treating the zero time as "already
 // expired" would re-mint on every single call.
-func Test_ReuseTokenSourceWithSkew_ZeroExpiry(t *testing.T) {
+func TestReuseTokenSourceWithSkew_ZeroExpiry(t *testing.T) {
 	t.Parallel()
 
 	src := &zeroExpiryTokenSource{}
@@ -1360,12 +1235,12 @@ func (c *countingTokenSource) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
-// Test_WithHTTPClient_CachesApplicationToken proves WithHTTPClient caches the
+// TestWithHTTPClient_CachesApplicationToken proves WithHTTPClient caches the
 // application JWT the same way the default transport does. NewInstallationTokenSource
 // wraps the source in oauth2.ReuseTokenSource, but WithHTTPClient wires the raw
 // source, so supplying a custom client silently re-signs a JWT on every
 // installation-token request.
-func Test_WithHTTPClient_CachesApplicationToken(t *testing.T) {
+func TestWithHTTPClient_CachesApplicationToken(t *testing.T) {
 	src := &countingTokenSource{}
 
 	// expires_at inside the skew window, so the installation-token cache
@@ -1422,11 +1297,11 @@ func Test_cachedSource_KeepsTheSkew(t *testing.T) {
 	}
 }
 
-// Test_NewInstallationTokenSource_RejectsZeroID proves a zero installation ID is
+// TestNewInstallationTokenSource_RejectsZeroID proves a zero installation ID is
 // refused as a configuration error instead of being sent to GitHub as
 // /app/installations/0/access_tokens, which can only 404. A zero App ID is
 // already rejected at construction; this is the same mistake one layer down.
-func Test_NewInstallationTokenSource_RejectsZeroID(t *testing.T) {
+func TestNewInstallationTokenSource_RejectsZeroID(t *testing.T) {
 	var hits atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1529,7 +1404,7 @@ func Test_resolveIssuer_NamedIdentifierTypes(t *testing.T) {
 	}
 }
 
-func Test_NewApplicationTokenSource_NamedIdentifierTypes(t *testing.T) {
+func TestNewApplicationTokenSource_NamedIdentifierTypes(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -1613,10 +1488,9 @@ func issuerFromJWT(token string) (string, error) {
 // JWT.
 //
 // Token() backdates issuance by 60s for clock-drift protection
-// (exp = now - 60s + expiration), so any expiration <= 60s mints a token whose
-// exp is already in the past (or exactly now). WithApplicationTokenExpiration
-// clamps only the upper bound, so those values slip through and the caller gets
-// a credential GitHub answers with 401.
+// (exp = now - 60s + expiration), so an expiration of 60s or less would mint a
+// token whose exp has already passed. WithApplicationTokenExpiration therefore
+// sends such values to the default, and this test keeps it doing so.
 //
 // Assertions are on the observable oauth2.Token.Expiry and the signed exp
 // claim, not on internal fields, so the test holds whether the lower bound is
@@ -1734,13 +1608,13 @@ func (c *countingSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerO
 	return c.Signer.Sign(rand, digest, opts)
 }
 
-// Test_WithApplicationTokenExpiration_TokenIsCacheable proves the accepted
+// TestWithApplicationTokenExpiration_TokenIsCacheable proves the accepted
 // lower bound leaves a token the cache can actually hold. An expiration above
 // the 60s backdate but within DefaultExpirySkew of it yields a token whose
 // remaining life is at or below the skew, so ReuseTokenSourceWithSkew treats it
 // as stale immediately and re-signs on every call — a remote round trip for the
 // KMS, HSM and Vault signers NewApplicationTokenSourceFromSigner exists to serve.
-func Test_WithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
+func TestWithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -1775,10 +1649,7 @@ func Test_WithApplicationTokenExpiration_TokenIsCacheable(t *testing.T) {
 func TestNewApplicationTokenSource_IntegerLiteral(t *testing.T) {
 	t.Parallel()
 
-	key, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := testKeyPEM(t)
 	src, err := NewApplicationTokenSource(12345, key)
 	if err != nil {
 		t.Fatalf("NewApplicationTokenSource(12345) error = %v", err)
@@ -1802,10 +1673,7 @@ func TestNewApplicationTokenSource_IntegerLiteral(t *testing.T) {
 func TestWithApplicationTokenExpiration_SharedOption(t *testing.T) {
 	t.Parallel()
 
-	key, err := generatePrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := testKeyPEM(t)
 	opt := WithApplicationTokenExpiration(time.Hour) // out of range, so normalized
 	var wg sync.WaitGroup
 	for range 4 {

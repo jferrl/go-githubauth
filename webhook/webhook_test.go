@@ -64,7 +64,7 @@ func TestMiddleware_Valid(t *testing.T) {
 	Middleware(secret)(next).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 	if !bytes.Equal(gotBody, body) {
 		t.Fatalf("body restored incorrectly: got %q, want %q", gotBody, body)
@@ -88,7 +88,7 @@ func TestMiddleware_InvalidSignature(t *testing.T) {
 		t.Fatal("next handler was called on invalid signature")
 	}
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestMiddleware_MissingSignature(t *testing.T) {
 		t.Fatal("next handler was called without a signature")
 	}
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestMiddleware_MaxPayloadSize(t *testing.T) {
 		t.Fatal("next handler was called on oversized body")
 	}
 	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -191,7 +191,7 @@ func TestMiddleware_CustomErrorHandler(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusTeapot {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTeapot)
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusTeapot)
 	}
 	if !errors.Is(captured, ErrSignatureMismatch) {
 		t.Fatalf("captured err = %v, want errors.Is(ErrSignatureMismatch)", captured)

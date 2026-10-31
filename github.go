@@ -172,7 +172,8 @@ type InstallationPermissions struct {
 	Other map[string]string `json:"-"`
 }
 
-// MarshalJSON sends Other alongside the fields.
+// MarshalJSON sends Other alongside the fields. The value receiver lets a
+// non-pointer InstallationPermissions marshal Other too.
 func (p InstallationPermissions) MarshalJSON() ([]byte, error) {
 	type fields InstallationPermissions
 	// Only *string fields, which always marshal.
@@ -257,6 +258,9 @@ type githubClient struct {
 	baseURL         *url.URL
 	httpClient      *http.Client
 	retryOnThrottle bool
+	// sleep waits out a throttle before the retry. It is sleepCtx; tests
+	// record the wait instead of spending it.
+	sleep func(context.Context, time.Duration) error
 }
 
 // newGitHubClient creates a new GitHub API client.
@@ -267,14 +271,15 @@ func newGitHubClient(httpClient *http.Client) *githubClient {
 		baseURL:         baseURL,
 		httpClient:      httpClient,
 		retryOnThrottle: true,
+		sleep:           sleepCtx,
 	}
 }
 
 // withEnterpriseURL sets the base URL for GitHub Enterprise Server.
-func (c *githubClient) withEnterpriseURL(baseURL string) (*githubClient, error) {
+func (c *githubClient) withEnterpriseURL(baseURL string) error {
 	base, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+		return fmt.Errorf("failed to parse base URL: %w", err)
 	}
 
 	if !strings.HasSuffix(base.Path, "/") {
@@ -288,18 +293,17 @@ func (c *githubClient) withEnterpriseURL(baseURL string) (*githubClient, error) 
 	}
 
 	c.baseURL = base
-
-	return c, nil
+	return nil
 }
 
 // withBaseURL sets the API base URL verbatim, applying none of the GitHub
 // Enterprise Server path rewriting that withEnterpriseURL performs. Only a
 // trailing slash is appended when missing so that endpoint resolution via
 // baseURL.Parse works correctly.
-func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
+func (c *githubClient) withBaseURL(baseURL string) error {
 	base, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse base URL: %w", err)
+		return fmt.Errorf("failed to parse base URL: %w", err)
 	}
 
 	if !strings.HasSuffix(base.Path, "/") {
@@ -307,8 +311,7 @@ func (c *githubClient) withBaseURL(baseURL string) (*githubClient, error) {
 	}
 
 	c.baseURL = base
-
-	return c, nil
+	return nil
 }
 
 // createInstallationToken creates an installation access token for a GitHub App.
@@ -345,7 +348,7 @@ func (c *githubClient) createInstallationToken(ctx context.Context, installation
 	}
 
 	// Both are wrapped so a cancelled wait still reads as rate limited.
-	if sleepErr := sleepCtx(ctx, throttled.RetryAfter); sleepErr != nil {
+	if sleepErr := c.sleep(ctx, throttled.RetryAfter); sleepErr != nil {
 		return nil, fmt.Errorf("%w: %w", sleepErr, err)
 	}
 
