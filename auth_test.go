@@ -1829,3 +1829,46 @@ func TestReuseTokenSourceWithSkew_NonPositiveDelegates(t *testing.T) {
 		t.Errorf("ReuseTokenSourceWithSkew(nil, cache, 0) = %T wrapping the cache, want the cache itself", got)
 	}
 }
+
+// TestWithExpirySkew_SetsTheWindow checks the option is the window the JWT
+// cache refreshes on: a 2-minute JWT, live for 60s after the backdate, sits
+// inside a 9-minute skew, so every Token call signs anew, and outside the
+// default 30s one, so it is reused.
+func TestWithExpirySkew_SetsTheWindow(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		opts      []ApplicationTokenOpt
+		wantSigns int
+	}{
+		{name: "default skew reuses it", opts: nil, wantSigns: 1},
+		{name: "a skew past its life refreshes it", opts: []ApplicationTokenOpt{WithExpirySkew(9 * time.Minute)}, wantSigns: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := &stubSigner{pub: &rsaKey.PublicKey, signFn: func(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+				return rsaKey.Sign(r, digest, opts)
+			}}
+			opts := append([]ApplicationTokenOpt{WithApplicationTokenExpiration(2 * time.Minute)}, tt.opts...)
+			src, err := NewApplicationTokenSourceFromSigner(int64(1), stub, opts...)
+			if err != nil {
+				t.Fatalf("NewApplicationTokenSourceFromSigner() error = %v", err)
+			}
+			for range 2 {
+				if _, err := src.Token(); err != nil {
+					t.Fatalf("Token() error = %v", err)
+				}
+			}
+			if stub.gotCalls != tt.wantSigns {
+				t.Errorf("signs = %d, want %d", stub.gotCalls, tt.wantSigns)
+			}
+		})
+	}
+}
