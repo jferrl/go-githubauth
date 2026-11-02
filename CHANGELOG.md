@@ -14,6 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > That `v2.0.2` tag is the only thing carrying the retraction — the `v2/` directory no
 > longer exists on `main` — so the tag must not be deleted or the retraction is lost.
 
+## [Unreleased]
+
+### Security
+
+- Release binaries were built with Go 1.26.0, the oldest Go `go.mod` supports, so every
+  standard-library fix since shipped unpatched: v1.12.0's binary has 45 known
+  vulnerabilities that govulncheck finds reachable, in `net/http`, `crypto/tls` and
+  `crypto/x509` among others. Releases are now built with the newest stable Go. The library
+  is unaffected: your own Go toolchain builds it
+
+### Added
+
+- Release archives and the gh extension's binaries carry a build provenance attestation:
+  `gh attestation verify <file> -R jferrl/go-githubauth` shows it was built by the release
+  workflow from a tag
+- govulncheck runs on every change and weekly, with the Go the release builds with
+
 ## [v1.12.0] - 2026-10-31
 
 `githubauth token --exec` now revokes the token when the command exits, and the CLI can

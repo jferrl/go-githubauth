@@ -85,6 +85,14 @@ From v1.12.0 it is also a [GitHub CLI](https://cli.github.com) extension, run as
 gh extension install jferrl/gh-githubauth
 ```
 
+Releases after v1.12.0 carry a build provenance attestation for every archive and every
+extension binary, which shows a file was built by this repository's release workflow from
+a tagged commit. Check one before you run it:
+
+```bash
+gh attestation verify githubauth_<version>_darwin_arm64.tar.gz -R jferrl/go-githubauth
+```
+
 ```bash
 githubauth token --client-id Iv1.abc --key app.pem --installation 12345
 ```

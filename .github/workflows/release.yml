@@ -26,9 +26,14 @@ jobs:
           # checkout would produce an empty one.
           fetch-depth: 0
 
+      # The newest Go, not go.mod's minimum: go.mod's go line is the oldest Go
+      # the library supports, and building the binaries with exactly that one
+      # shipped every standard-library fix since, net/http and crypto/tls
+      # included, unpatched. govulncheck checks the same version.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
 
       # A missing or empty tap token skips the cask instead of failing the
       # release, which is the right trade but is otherwise invisible. Say so in
@@ -54,6 +59,31 @@ jobs:
           # still publishes; only the cask is skipped.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
+  attest:
+    # Provenance for every archive in checksums.txt, so anyone can check one
+    # was built by this workflow from this tag:
+    #   gh attestation verify githubauth_<version>_<os>_<arch>.tar.gz -R jferrl/go-githubauth
+    # Its own job for the gh-extension job's reason: a re-run of goreleaser
+    # fails on the assets it already uploaded, so only a separate job can be
+    # retried with "Re-run failed jobs".
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # attest-build-provenance signs with the job's OIDC identity and stores
+      # the attestation on the repository.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the release's checksums
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: checksums.txt
+
   gh-extension:
     # gh installs a binary extension from the latest release of a gh-* repo,
     # picking the asset whose name ends in os-arch (.exe on Windows), and takes
@@ -70,23 +100,18 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      # The bare binaries are attested too: they are what gh installs, and
+      # their digests differ from the archives they come out of.
+      id-token: write
+      attestations: write
     steps:
-      - name: Publish the gh extension
+      - name: Unpack the release's binaries
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
-          REPO: jferrl/gh-githubauth
           # Downloads the public release just made.
           GH_TOKEN: ${{ github.token }}
-          # The tap token, extended to jferrl/gh-githubauth: the job's own
-          # token cannot write to another repository.
-          PUBLISH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
-          if [ -z "$PUBLISH_TOKEN" ]; then
-            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. The gh extension is not published."
-            exit 0
-          fi
-
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p 'githubauth_*' -p checksums.txt -D dl
           (cd dl && sha256sum -c checksums.txt)
 
@@ -111,7 +136,24 @@ jobs:
             exit 1
           fi
 
-          export GH_TOKEN="$PUBLISH_TOKEN"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ext/*
+
+      - name: Publish the gh extension
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: jferrl/gh-githubauth
+          # The tap token, extended to jferrl/gh-githubauth: the job's own
+          # token cannot write to another repository.
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_GITHUB_TOKEN is unset or empty. The gh extension is not published."
+            exit 0
+          fi
+
           # gh installs from the latest release, so it is built as a draft and
           # published only once every binary is on it. A published one is never
           # touched again; a draft left by a failed run is picked up.
